@@ -85,6 +85,13 @@ cp .env.example .env
 uvicorn app.main:app --reload --host 0.0.0.0 --port 10000
 ```
 
+如果已经按仓库脚本部署到服务器，也可以直接使用仓库内脚本做启停：
+
+```bash
+./scripts/start.sh
+./scripts/stop.sh
+```
+
 4. 打开前端：
 
 浏览器访问：
@@ -179,6 +186,88 @@ cd /srv/iot-agent-new
 ./scripts/manage.sh update
 ./scripts/manage.sh restart
 ```
+
+`start.sh` / `stop.sh` 实际上是对 `scripts/manage.sh start|stop` 的简化封装，适合部署后快速启停；如果需要查看日志、更新代码、进入容器，继续使用 `scripts/manage.sh`。
+
+## 前端系统设置热修改
+
+服务启动后，可以直接在前端“系统设置”页面修改大部分运行配置，保存后会立即写回当前运行态并落盘到 `.env`。
+
+当前可在前端热修改的内容包括：
+
+- `DeepSeek API Key`
+- `DeepSeek Base URL`
+- 常规模型与高难模型
+- 上传目录、审计目录、样本元数据目录、运行时目录、技能数据目录
+- Docker 子代理开关、镜像名、网络模式
+- 最大并行子代理数、工具超时、LLM 超时、工具输出上限
+- 循环干预阈值、笔记召回阈值、上下文重置阈值、协作轮数与协作超时
+- `IDA` / `rootfs_elf` 等外部工具路径
+
+说明：
+
+- 保存后会立即影响“新的上传、新建任务和后续子代理调度”。
+- 已经创建的历史会话仍按原始落盘路径读取，不会回写旧数据。
+- 前端保存的配置会同步写入 `.env`，因此服务重启后仍会保留。
+- 该页面可以修改 `API Key`，部署到公网或公司网络时应配合访问控制，不要裸露给未授权用户。
+
+### 推荐修改项
+
+部署到新服务器后，通常至少需要在“系统设置”里确认或修改以下字段：
+
+- `DeepSeek API Key`
+- `DeepSeek Base URL`
+- `host_workspace_dir`
+- 上传/审计/运行时相关目录
+- `enable_docker_runtime`
+- `subagent_docker_image`
+- `subagent_docker_network_mode`
+- `IDA_HEADLESS_PATH`、`HOST_IDA_INSTALL_DIR`、`HOST_IDA_USER_DIR`
+- `ROOTFS_ELF_TOOL_DIR`
+
+### 服务器路径填写规则
+
+如果服务直接运行在宿主机上，前端里填写真实服务器路径即可，例如：
+
+```text
+upload_dir=/srv/iot-agent-new/data/uploads
+audit_dir=/srv/iot-agent-new/data/audits
+artifact_meta_dir=/srv/iot-agent-new/data/artifacts
+runtime_dir=/srv/iot-agent-new/data/runtime
+skill_data_dir=/srv/iot-agent-new/data/skills
+knowledge_deleted_path=/srv/iot-agent-new/data/knowledge/deleted_entries.json
+host_workspace_dir=/srv/iot-agent-new
+```
+
+如果使用当前仓库自带的 `docker-compose.prod.yml` 部署，`manager` 服务运行在容器内，而项目宿主目录挂载到容器内的 `/workspace`。这时建议这样填写：
+
+```text
+upload_dir=/workspace/data/uploads
+audit_dir=/workspace/data/audits
+artifact_meta_dir=/workspace/data/artifacts
+runtime_dir=/workspace/data/runtime
+skill_data_dir=/workspace/data/skills
+knowledge_deleted_path=/workspace/data/knowledge/deleted_entries.json
+host_workspace_dir=/srv/iot-agent-new
+```
+
+注意：
+
+- `upload_dir`、`audit_dir`、`artifact_meta_dir`、`runtime_dir`、`skill_data_dir`、`knowledge_deleted_path`：
+  在 Docker 部署下应填写“容器内路径”，通常是 `/workspace/...`
+- `host_workspace_dir`：
+  这里必须填写“宿主机上的项目绝对路径”，例如 `/srv/iot-agent-new`
+
+### 外部工具路径说明
+
+以下字段依赖服务器上真实安装情况，不需要时可以留空：
+
+- `IDA_HEADLESS_PATH`
+- `HOST_IDA_INSTALL_DIR`
+- `HOST_IDA_USER_DIR`
+- `ROOTFS_ELF_TOOL_DIR`
+
+如果公司服务器没有安装 `IDA` 或 `rootfs_elf`，建议先留空，平台仍可正常运行，只是对应工具能力会不可用。
 
 ## 当前审计能力边界
 
