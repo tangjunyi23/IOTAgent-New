@@ -1,0 +1,14 @@
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager
+    ports:
+      - "10000:10000"
+    env_file:
+      - .env
+    environment:
+      HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR:-${PWD}}
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock

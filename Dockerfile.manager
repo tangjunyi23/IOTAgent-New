@@ -1,0 +1,40 @@
+FROM debian:bookworm-slim AS capstone4
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libcapstone4 \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM python:3.12-slim
+
+WORKDIR /workspace
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV TVHEADLESS=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        afl++ \
+        binutils \
+        checksec \
+        curl \
+        file \
+        gdb \
+        libuv1t64 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /usr/lib/x86_64-linux-gnu \
+    && ln -sf /usr/local/lib/libpython3.12.so.1.0 /usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0
+
+COPY --from=capstone4 /usr/lib/x86_64-linux-gnu/libcapstone.so* /usr/lib/x86_64-linux-gnu/
+
+COPY pyproject.toml README.md /workspace/
+COPY .vendor /workspace/.vendor
+COPY app /workspace/app
+COPY workers /workspace/workers
+COPY docs /workspace/docs
+COPY data /workspace/data
+
+RUN pip install --no-cache-dir ".[analysis]"
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "10000"]

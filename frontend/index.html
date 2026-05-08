@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>思而听二进制漏洞审计平台</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260508b" />
+  </head>
+  <body>
+    <div class="app-frame">
+      <aside class="sidebar">
+        <div class="brand-block">
+          <div class="brand-mark">&lt;/&gt;</div>
+          <div class="brand-copy">
+            <p class="brand-kicker">Binary Audit</p>
+            <h1>审计控制台</h1>
+          </div>
+        </div>
+
+        <nav class="nav-menu" aria-label="主导航">
+          <button class="nav-button is-active" type="button" data-view-target="home">首页</button>
+          <button class="nav-button" type="button" data-view-target="projects">审计项目</button>
+          <button class="nav-button" type="button" data-view-target="task-management">审计项目任务管理</button>
+          <button class="nav-button" type="button" data-view-target="reports">报告生成</button>
+          <button class="nav-button" type="button" data-view-target="knowledge">知识库</button>
+          <button class="nav-button" type="button" data-view-target="settings">系统设置</button>
+        </nav>
+
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="topbar-copy">
+            <p class="topbar-kicker" id="view-kicker">首页</p>
+            <h2 id="view-title">审计总览</h2>
+          </div>
+          <div class="topbar-actions">
+            <button class="button button-secondary" type="button" id="clear-session-selection-button">
+              清除当前项目
+            </button>
+            <button class="button button-primary" type="button" id="open-create-task-modal-button">
+              新建审计任务
+            </button>
+          </div>
+        </header>
+
+        <main class="content-area">
+          <section class="view is-active" data-view="home">
+            <article class="panel-card platform-title-banner">
+              <p class="section-kicker">思考 / 取证 / 利用</p>
+              <h1>思而听二进制漏洞审计平台</h1>
+              <p>
+                以中央 ManagerAgent 编排多 Docker 子代理，沉淀函数级结论、已验证 PoC 与可复现利用脚本。
+              </p>
+            </article>
+
+            <article class="panel-card dashboard-hero">
+              <div class="hero-content">
+                <p class="section-kicker">首页</p>
+                <h3>统一查看审计态势、问题分布与项目进度</h3>
+                <p class="hero-text">
+                  通过中央管理代理编排多个隔离子代理，跟踪待审计任务、审计中任务、报告产出与问题走势。
+                </p>
+                <div class="hero-actions">
+                  <button class="button button-primary" type="button" id="hero-create-task-button">
+                    新建审计任务
+                  </button>
+                  <button class="button button-secondary" type="button" data-switch-view="task-management">
+                    查看任务管理
+                  </button>
+                </div>
+              </div>
+              <div class="hero-badges">
+                <span class="hero-badge">Docker 子代理并行审计</span>
+                <span class="hero-badge">函数级结论归并</span>
+                <span class="hero-badge">报告导出与追踪</span>
+              </div>
+            </article>
+
+            <section class="metric-grid">
+              <article class="metric-card">
+                <span class="metric-label">待审计任务</span>
+                <strong id="pending-task-count">0</strong>
+                <span class="metric-hint">排队与等待启动的项目</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">审计中任务</span>
+                <strong id="active-task-count">0</strong>
+                <span class="metric-hint">当前正在运行的项目</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">已完成任务</span>
+                <strong id="completed-task-count">0</strong>
+                <span class="metric-hint">已经生成审计结果的项目</span>
+              </article>
+              <article class="metric-card">
+                <span class="metric-label">已发现问题</span>
+                <strong id="issue-total-count">0</strong>
+                <span class="metric-hint">根据报告提取的高/中/低危总数</span>
+              </article>
+            </section>
+
+            <section class="insight-grid">
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">文件产出结果</p>
+                    <h3>问题等级分布</h3>
+                  </div>
+                </div>
+                <div class="severity-board">
+                  <div id="severity-chart"></div>
+                  <div id="severity-legend" class="severity-legend"></div>
+                </div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">趋势分析</p>
+                    <h3>问题趋势折线</h3>
+                  </div>
+                </div>
+                <div id="trend-chart" class="trend-chart"></div>
+              </article>
+            </section>
+
+            <section class="task-column-grid">
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">待处理</p>
+                    <h3>待审计任务</h3>
+                  </div>
+                </div>
+                <div id="pending-task-list" class="stack-list"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">执行中</p>
+                    <h3>审计中任务</h3>
+                  </div>
+                </div>
+                <div id="active-task-list" class="stack-list"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">归档</p>
+                    <h3>已完成任务</h3>
+                  </div>
+                  <div class="section-actions">
+                    <button class="button button-secondary" type="button" id="toggle-completed-selection-button">
+                      全选历史任务
+                    </button>
+                    <button class="button button-danger" type="button" id="bulk-delete-completed-button">
+                      批量删除历史任务
+                    </button>
+                  </div>
+                </div>
+                <div id="completed-task-list" class="stack-list"></div>
+              </article>
+            </section>
+          </section>
+
+          <section class="view" data-view="projects">
+            <div class="view-grid view-grid-projects">
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">项目列表</p>
+                    <h3>审计项目</h3>
+                  </div>
+                  <div class="section-actions">
+                    <button class="button button-secondary" type="button" id="refresh-projects-button">
+                      刷新项目
+                    </button>
+                    <button class="button button-secondary" type="button" id="toggle-project-selection-button">
+                      全选任务
+                    </button>
+                    <button class="button button-danger" type="button" id="bulk-delete-projects-button">
+                      批量删除任务
+                    </button>
+                  </div>
+                </div>
+                <div id="project-list" class="project-list"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">项目概览</p>
+                    <h3>当前项目详情</h3>
+                  </div>
+                </div>
+                <div id="project-detail" class="detail-stack"></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="task-management">
+            <div class="view-grid view-grid-tasks">
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">项目进度</p>
+                    <h3>当前审计任务</h3>
+                  </div>
+                </div>
+                <div id="task-management-summary" class="detail-stack"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">子代理</p>
+                    <h3>当前进度工作台</h3>
+                  </div>
+                </div>
+                <div id="task-agent-board" class="agent-grid"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">通信日志</p>
+                    <h3>Agent 互相交流记录</h3>
+                  </div>
+                </div>
+                <div id="agent-log-list" class="log-list"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">运行过程</p>
+                    <h3>当前进度时间线</h3>
+                  </div>
+                </div>
+                <div id="progress-log-list" class="log-list"></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="reports">
+            <div class="view-grid view-grid-reports">
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">报告操作</p>
+                    <h3>报告生成</h3>
+                  </div>
+                </div>
+                <div id="report-session-summary" class="detail-stack"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">预览</p>
+                    <h3>最终报告内容</h3>
+                  </div>
+                </div>
+                <div id="report-preview" class="rich-text report-preview"></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view" data-view="knowledge">
+            <article class="panel-card">
+              <div class="section-heading">
+                <div>
+                  <p class="section-kicker">知识库</p>
+                  <h3>历史审计结论沉淀</h3>
+                </div>
+                <div class="section-actions">
+                  <button class="button button-secondary" type="button" id="toggle-knowledge-selection-button">
+                    全选知识历史
+                  </button>
+                  <button class="button button-danger" type="button" id="bulk-delete-knowledge-button">
+                    批量删除历史
+                  </button>
+                </div>
+              </div>
+              <div id="knowledge-summary" class="knowledge-summary"></div>
+              <div id="knowledge-list" class="knowledge-list"></div>
+            </article>
+          </section>
+
+          <section class="view" data-view="settings">
+            <div class="view-grid view-grid-settings">
+              <article class="panel-card settings-panel">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">系统设置</p>
+                    <h3>DeepSeek API Key、系统状态与工具开关</h3>
+                  </div>
+                </div>
+                <form id="deepseek-settings-form" class="settings-form">
+                  <label class="field field-wide">
+                    <span>DeepSeek API Key</span>
+                    <input
+                      id="settings-api-key"
+                      type="password"
+                      autocomplete="off"
+                      placeholder="输入后保存到当前平台运行配置"
+                    />
+                    <small id="settings-api-key-hint">当前未配置 API Key。</small>
+                  </label>
+                  <div class="form-actions field-wide">
+                    <button class="button button-primary" type="submit" id="save-api-key-button">
+                      保存 API Key
+                    </button>
+                    <button class="button button-secondary" type="button" id="check-api-button">
+                      检测当前 API
+                    </button>
+                  </div>
+                </form>
+                <div id="api-check-status" class="api-check-status"></div>
+                <div id="system-status-grid" class="system-status-grid"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
+                    <p class="section-kicker">工具能力</p>
+                    <h3>当前可调用工具与开关</h3>
+                  </div>
+                </div>
+                <div id="tool-grid" class="tool-grid"></div>
+              </article>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="create-task-modal" hidden>
+      <div class="modal-backdrop" data-close-modal></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="create-task-title">
+        <div class="modal-head">
+          <div>
+            <p class="section-kicker">新建任务</p>
+            <h3 id="create-task-title">上传任务文件并创建审计</h3>
+          </div>
+          <button class="icon-button" type="button" id="close-create-task-modal-button">关闭</button>
+        </div>
+
+        <form id="create-task-form" class="modal-form">
+          <label class="field field-wide upload-field">
+            <span>任务文件</span>
+            <input type="file" id="task-file" required />
+            <small id="task-file-meta">请选择待审计的二进制样本文件。</small>
+          </label>
+
+          <label class="field">
+            <span>任务标题</span>
+            <input
+              id="task-title"
+              name="title"
+              required
+              placeholder="例如：pwn 样本深度审计"
+              value=""
+            />
+          </label>
+
+          <label class="field">
+            <span>难度等级</span>
+            <select id="task-difficulty" name="difficulty">
+              <option value="auto">auto</option>
+              <option value="routine">routine</option>
+              <option value="hard">hard</option>
+            </select>
+          </label>
+
+          <label class="field field-wide">
+            <span>审计目标</span>
+            <textarea
+              id="task-objective"
+              name="objective"
+              required
+              rows="5"
+              placeholder="描述你希望平台关注的漏洞面、利用链或验证重点"
+            >对目标二进制做初始攻击面梳理、基础证据采样，并总结可能的漏洞突破口。</textarea>
+          </label>
+
+          <label class="field">
+            <span>最大子代理数</span>
+            <input id="task-max-subagents" name="max_subagents" type="number" min="1" max="4" value="3" />
+          </label>
+
+          <label class="field">
+            <span>标签</span>
+            <input id="task-tags" name="tags" placeholder="pwn, elf, fmt" />
+          </label>
+
+          <div class="form-actions field-wide">
+            <button class="button button-primary" type="submit" id="create-task-submit-button">
+              上传并创建
+            </button>
+            <button class="button button-secondary" type="button" id="reset-create-task-button">
+              重置
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="modal-shell" id="app-dialog-modal" hidden>
+      <div class="modal-backdrop" data-close-dialog></div>
+      <div class="modal-card modal-card-compact" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+        <div class="modal-head">
+          <div>
+            <p class="section-kicker" id="app-dialog-kicker">提示</p>
+            <h3 id="app-dialog-title">系统提示</h3>
+          </div>
+          <button class="icon-button" type="button" id="close-app-dialog-button">关闭</button>
+        </div>
+        <div class="dialog-body">
+          <p id="app-dialog-message" class="dialog-message"></p>
+        </div>
+        <div class="form-actions field-wide" id="app-dialog-actions">
+          <button class="button button-secondary" type="button" id="app-dialog-cancel-button">取消</button>
+          <button class="button button-primary" type="button" id="app-dialog-confirm-button">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/app.js?v=20260508d" defer></script>
+  </body>
+</html>

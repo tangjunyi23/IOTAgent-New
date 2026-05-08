@@ -1,0 +1,663 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Source: https://radare.org/
+Files-Excluded: shlr/www/*
+Comment:
+ radare2 source usually comes with a pre-built version of the web-interface.
+ This has been removed in the Debian package to follow the Debian Free Software
+ Guidelines. Consider installing the web-interface using the extra repository
+ available under https://github.com/radare/radare2-webui
+
+Files: *
+License: LGPL-3
+Copyright: 2006-2020 pancake
+           2006-2019 esteve
+           2008-2020 nibble
+           2007-2020 alvaro_fe
+           2009-2020 maijin
+           2009-2020 thestr4ng3r
+           2009-2020 eagleoflqj
+           2008-2020 Jody Frankowski
+           2012-2020 houndthe
+           2013-2020 sghctoma
+           2013-2020 xarkes
+           2013-2020 sivaramaaa
+           2009-2020 oddcoder
+           2007-2019 Skia
+           2009-2019 ret2libc
+           2009-2019 defragger
+           2009-2019 earada
+           2015-2019 riq
+           2015-2019 ampotos
+           2009-2019 Anton Kochkov
+           2009-2019 dso
+           2008-2020 condret <condret@runas-racer.com>
+           2012-2019 Fedor Sakharov <fedor.sakharov@gmail.com>
+           2008-2019 inisider
+           2009-2019 ninjahacker
+           2015-2019 nodepad
+           2008-2019 xvilka
+           2010-2019 Adam Pridgen <dso@rice.edu || adam.pridgen@thecoverofnight.com>
+           2008-2019 The Lemon Man <thatlemon@gmail.com>
+           2009-2019 h4ng3r
+           2009-2019 hmht
+           2011-2019 Roc Valles
+           2011-2019 killabyte
+           2014-2019 Judge_Dredd
+           2014-2019 Kirils Solovjovs
+           2015-2019 a0rtega
+           2016-2019 Oscar Salvador
+           2017-2020 MaskRay
+           2017-2019 cgvwzq
+           2017-2019 wargio
+           2017-2019 deroad
+           2018-2019 JohnPeng47
+           2013-2018 dkreuter
+           2010-2018 dark_k3y
+           2012-2018 Alexander
+           2016-2018 SkUaTeR
+           2016-2018 moritz
+           2016-2018 n4x0r
+           2016-2018 soez
+           2008-2018 r00tus3r
+           2009-2018 jduck
+           2009-2018 saucec0de
+           2009-2020 nikolai
+           2010-2018 rkx1209
+           2012-2018 fedor.sakharov
+           2013-2018 astuder
+           2014-2018 kazarmy
+           2015-2018 Dax89
+           2015-2018 courk
+           2015-2018 shengdi
+           2016-2018 Davis
+           2016-2018 Alex Kornitzer
+           2016-2018 panda
+           2017-2018 maskray
+           2017-2018 srimanta.barua1
+           2015-2017 qnix
+           2013-2017 fenugrec
+           2016-2017 bobby.smiles32@gmail.com
+           2016-2017 rakholiyajenish.07
+           2009-2016 montekki
+           2014-2016 jfrankowski
+           2009-2016 Alexandru Caciulescu
+           2009-2016 madprogrammer
+           2014-2016 crowell
+           2012-2015 Bhootravi
+           2013-2015 th0rpe
+           2010-2013 eloi<limited-entropy.com>
+           2005-2006 Matt Mackall <mpm@selenic.com>
+           2003-2004 Philippe Biondi <phil@secdev.org>
+           2009-2020 GustavoLCR
+           2019-2020 mrmacete
+           2014-2020 vane11ope
+           2016-2020 FXTi
+           2016-2020 Matthieu 'c0riolis' Tardy
+           2016-2020 x0urc3
+           2014-2020 abcSup
+           2020 curly
+           2019 MapleLeaf-X
+           2019 Vasilij Schneidermann <mail@vasilij.de>
+           2019 deepakchethan
+           2018 Dirk Eibach
+           2018 Guntermann & Drunck GmbH
+           2016 esanfelix
+           2015 julien (jvoisin) voisin
+           2015 danielps
+           2015 Felix Held
+           2014 jn
+           2008 Anant Narayanan
+           2020 Yaroslav Stavnichiy
+           2020 Aswin 'officialcjunior' C
+           2020 gogo
+
+Files: sys/cccl
+Copyright: 2000-2015 Geoffrey Wossum <gwossum@acm.org>
+           2000-2015 Alin Serdean <aserdean@cloudbasesolutions.com>
+           2000-2015 Gurucharan Shetty <gshetty@nicira.com>
+           2000-2015 Joe Stringer <joestringer@nicira.com>
+           2000-2015 Remko Tronçon <git@el-tramo.be>
+           2000-2015 William S Fulton <wsf@fultondesigns.co.uk>
+License: GPL-3
+Comment: imported from https://github.com/swig/cccl
+
+Files: doc/vim2r2.js
+Copyright: 2015 pancake
+License: LGPL-3
+
+Files: doc/node.js/*
+Copyright: 2015 pancake <pancake@nopcode.org>
+License: Expat
+
+Files: shlr/grub/*
+Copyright: 1999-2010 Free Software Foundation, Inc.
+           2010 Bean Lee
+License: GPL-3+
+
+Files: shlr/qnx/*
+Copyright: 2014-2016 defragger
+           2014-2016 madprogrammer
+           1986-2016 Free Software Foundation, Inc.
+           2005 QNX Software Systems.
+License: GPL-3+
+
+Files: shlr/tcc/*
+Copyright: 2001-2004 Fabrice Bellard
+License: LGPL-2+
+
+Files: shlr/sdb/*
+Copyright: 2007-2020 pancake
+           2009 Intel Corporation
+           1988-2004 Keith Packard
+           1988-2004 Bart Massey
+           2020 thestr4ng3r
+License: Expat
+
+Files: shlr/sdb/src/json/js0n.c
+Copyright: none
+License: public-domain
+ This is free and unencumbered software released into the public domain.
+ .
+ Anyone is free to copy, modify, publish, use, compile, sell, or
+ distribute this software, either in source code form or as a compiled
+ binary, for any purpose, commercial or non-commercial, and by any
+ means.
+ .
+ In jurisdictions that recognize copyright laws, the author or authors
+ of this software dedicate any and all copyright interest in the
+ software to the public domain. We make this dedication for the benefit
+ of the public at large and to the detriment of our heirs and
+ successors. We intend this dedication to be an overt act of
+ relinquishment in perpetuity of all present and future rights to this
+ software under copyright law.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ OTHER DEALINGS IN THE SOFTWARE.
+ .
+ For more information, please refer to <http://unlicense.org/>
+
+Files: shlr/java/class.*
+       shlr/java/dsojson.*
+Copyright: 2007-2015 dso
+           2007-2015 pancake
+License: Apache-2.0
+
+Files: shlr/lz4/*
+Copyright: 2011-2017 Yann Collet
+License: BSD-2-clause
+
+Files: shlr/mpc/mpc.*
+Copyright: 2013 Daniel Holden
+License: BSD-3-clause
+
+Files: shlr/zip/zip/*
+Copyright: 1999-2013 Dieter Baron and Thomas Klausner
+License: BSD-2-clause
+
+Files: shlr/zip/zlib/*
+       shlr/zip/include/deflate.h
+       shlr/zip/include/inflate.h
+       shlr/zip/include/zconf.h
+       shlr/zip/include/gzguts.h
+       shlr/zip/include/inftrees.h
+       shlr/zip/include/inffast.h
+       shlr/zip/include/zutil.h
+       shlr/zip/include/zlib.h
+Copyright: 1995-2013 Mark Adler
+           1995-2013 Jean-loup Gailly
+License: Zlib
+
+Files: shlr/spp/*
+Copyright: 2009-2016 pancake (at) nopcode (dot) org
+License: MIT
+
+Files: shlr/tree-sitter/lib/src/unicode/*
+Copyright: 1991-2019 Unicode, Inc.
+           1999-2015 International Business Machines
+License: Unicode
+
+Files: binr/ragg2/shellcodes.c.src
+Copyright: 2007-2011 pancake
+License: GPL-2+ and Beerware
+
+Files: libr/anal/p/anal_java.c
+Copyright: 2010-2019 Adam Pridgen <dso@rice.edu || adam.pridgen@thecoverofnight.com>
+           2010-2019 pancake
+License: Apache-2.0
+
+Files: libr/asm/arch/i8080/*
+Copyright: 2012 Alexander Demin <alexander@demin.ws>
+License: Expat
+
+Files: libr/asm/arch/z80/*
+Copyright: 2005 Jan Wilmans <jw@dds.nl>
+           2002-2009 Bas Wijnen <wijnen@debian.org>
+           2012 pancake <pancake@nopcode.org>
+License: GPL-3+
+
+Files: libr/asm/arch/z80/z80.c libr/asm/arch/z80/z80_tab.h
+Copyright: 2014-2016 condret
+           2016 unlogic
+License: LGPL-3
+
+Files: libr/asm/arch/dcpu16/asm.c
+Copyright: 2012 Karl Hobley
+License: Expat
+
+Files: libr/asm/arch/avr/*
+Copyright: 2007 Vanya A. Sergeev
+License: GPL-2+
+
+Files: libr/asm/arch/*/gnu/*
+       libr/asm/arch/riscv/*
+       libr/asm/arch/vax/*
+       libr/asm/arch/arm/aarch64/*
+       libr/asm/arch/include/*
+Copyright: 1989-2015 Free Software Foundation, Inc.
+           2007-2012 Synopsys Inc
+           1994-1995 Myricom, Inc.
+License: GPL-3+
+
+Files: libr/magic/*
+Copyright: 1986-1995 Ian F. Darwin
+           2003 Christos Zoulas
+           2011 pancake
+License: BSD-2-clause
+
+Files: libr/util/qrcode.c libr/include/r_qrcode.h
+Copyright: Project Nayuki
+License: Expat
+
+Files: libr/util/regex/*
+Copyright: 1992-1994 Henry Spencer
+           1992-1994 The Regents of the University of California
+License: BSD-3-clause
+
+Files: libr/util/base85.c
+Copyright: 2011 Remy Oukaour
+License: Expat
+
+Files: libr/util/randomart.c
+Copyright: 2000-2001 Markus Friedl
+License: BSD-2-clause
+
+Files: libr/search/aes-find.c
+Copyright: none
+License: public-domain
+ This source is public domain. Feel free to use it and distribute it.
+
+Files: libr/search/privkey-find.c
+Copyright: 2008 Nadia Heninger
+           2008 J. Alex Halderman
+ 		   2020 jvoisin
+ 		   2020 spelissier
+License: BSD-3-clause
+
+Files: libr/bin/d/jni.h
+Copyright: 2006 The Android Open Source Project
+License: Apache-2.0
+
+Files: libr/bin/format/elf/glibc_elf.h
+Copyright: 1995-2015 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: libr/bin/format/mach0/mach0_defines.h
+Copyright: 2003-2010 University of Illinois at Urbana-Champaign
+License: BSD_LLVM
+
+Files: libr/bin/format/pe/dotnet.c
+Copyright: 2015 The YARA Authors
+License: Apache-2.0
+
+Files: shlr/yxml/yxml.*
+Copyright: 2013-2014 Yoran Heling
+License: Expat
+
+Files: libr/bin/mangling/*
+Copyright: 1991-2010 Free Software Foundation, Inc.
+License: GPL-2+
+
+Files: libr/bin/mangling/cxx/demangle.h
+Copyright: 1992-2009 Free Software Foundation, Inc.
+License: LGPL-2+
+
+Files: libr/crypto/p/crypto_cps2.c
+Copyright: 2016 pancake
+           2016 esanfelix
+           2016 pof
+           Paul Leaman
+           Andreas Naive
+           Nicola Salmoria
+           Charles MacDonald
+License: LGPL-3 and BSD-3-clause
+
+Files: libr/debug/p/debug_windbg.c libr/io/p/io_windbg.c libr/debug/p/debug_winkd.c libr/io/p/io_winkd.c
+Copyright: 2014-2017 The Lemon Man
+License: LGPL-3+
+
+Files: libr/util/getopt.c
+Copyright: 1987-1994 The Regents of the University of California
+License: BSD-4-clause
+Comment: disabled by #if __WINDOWS__, so not linked against GPL code
+
+Files: libr/hash/sha2.*
+Copyright: 2000-2001 Aaron D. Gifford
+License: BSD-3-clause
+
+Files: libr/hash/md5.c
+Copyright: 1991-2, RSA Data Security, Inc. Created 1991. All
+License: RSA-License
+ License to copy and use this software is granted provided that it
+ is identified as the "RSA Data Security, Inc. MD5 Message-Digest
+ Algorithm" in all material mentioning or referencing this software
+ or this function.
+ .
+ License is also granted to make and use derivative works provided
+ that such works are identified as "derived from the RSA Data
+ Security, Inc. MD5 Message-Digest Algorithm" in all material
+ mentioning or referencing the derived work.
+ .
+ RSA Data Security, Inc. makes no representations concerning either
+ the merchantability of this software or the suitability of this
+ software for any particular purpose. It is provided "as is"
+ without express or implied warranty of any kind.
+ .
+ These notices must be retained in any copies of any part of this
+ documentation and/or software.
+
+Files: libr/hash/xxhash.*
+Copyright: 2012 Yann Collet
+License: BSD-2-clause
+
+Files: libr/hash/sha1.*
+Copyright: 1995-1999 Cryptography Research, Inc. All
+License: MPL-1.1 or GPL-2+
+
+Files: libr/hash/md4.c
+Copyright: 1997-1998 Andrew Tridgell
+           2002-2003 Steve French <sfrench@us.ibm.com>
+License: GPL-2+
+
+Files: libr/hash/hamdist.c
+Copyright: 2007-2011 pancake <youterm.com>
+License: GPL-2+
+
+Files: libr/asm/arch/include/opcode/hexagon.h
+Copyright: 1994-2002 Free Software Foundation, Inc.
+License: GPL-2+
+
+Files: libr/asm/arch/v850/gnu/*
+Copyright: 1996-2020 Free Software Foundation, Inc.
+License: GPL-3+
+
+Files: debian/*
+Copyright: 2010-2020 Sebastian Reichel <sre@kernel.org>
+License: ISC
+
+
+
+License: Beerware
+ THE BEER-WARE LICENSE" (Revision 42):
+ <coder/A/fluzo/D/org> wrote this file. As long as you retain this notice you
+ can do whatever you want with this stuff. If we meet some day, and you think
+ this stuff is worth it, you can buy me a beer in return.
+
+License: ISC
+ Permission to use, copy, modify, and/or distribute this software for any
+ purpose with or without fee is hereby granted, provided that the above
+ copyright notice and this permission notice appear in all copies.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+License: Expat
+ Permission is hereby granted, free of charge, to any person obtaining a copy of
+ this software and associated documentation files (the "Software"), to deal in
+ the Software without restriction, including without limitation the rights to
+ use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ of the Software, and to permit persons to whom the Software is furnished to do
+ so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: Apache-2.0
+ On Debian systems, the complete text of the Apache-2.0 can be found
+ in /usr/share/common-licenses/Apache-2.0.
+
+License: LGPL-2+
+ On Debian systems, the complete text of the LGPL-2 can be found in
+ /usr/share/common-licenses/LGPL-2.
+
+License: LGPL-2.1+
+ On Debian systems, the complete text of the LGPL-2 can be found in
+ /usr/share/common-licenses/LGPL-2.
+
+License: LGPL-3
+ On Debian systems, the complete text of the LGPL-3 can be found in
+ /usr/share/common-licenses/LGPL-3.
+
+License: LGPL-3+
+ On Debian systems, the complete text of the LGPL-3 can be found in
+ /usr/share/common-licenses/LGPL-3.
+
+License: GPL-2+
+ On Debian systems, the complete text of the GPL-2 can be found in
+ /usr/share/common-licenses/GPL-2.
+
+License: GPL-3
+ On Debian systems, the complete text of the GPL-3 can be found in
+ /usr/share/common-licenses/GPL-3.
+
+License: GPL-3+
+ On Debian systems, the complete text of the GPL-3 can be found in
+ /usr/share/common-licenses/GPL-3.
+
+License: BSD_LLVM
+ ==============================================================================
+ LLVM Release License
+ ==============================================================================
+ University of Illinois/NCSA
+ Open Source License
+ .
+ Copyright (c) 2003-2013 University of Illinois at Urbana-Champaign.
+ All rights reserved.
+ .
+ Developed by:
+ .
+     LLVM Team
+ .
+     University of Illinois at Urbana-Champaign
+ .
+     http://llvm.org
+ .
+ Permission is hereby granted, free of charge, to any person obtaining a copy of
+ this software and associated documentation files (the "Software"), to deal with
+ the Software without restriction, including without limitation the rights to
+ use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ of the Software, and to permit persons to whom the Software is furnished to do
+ so, subject to the following conditions:
+ .
+     * Redistributions of source code must retain the above copyright notice,
+       this list of conditions and the following disclaimers.
+ .
+     * Redistributions in binary form must reproduce the above copyright notice,
+       this list of conditions and the following disclaimers in the
+       documentation and/or other materials provided with the distribution.
+ .
+     * Neither the names of the LLVM Team, University of Illinois at
+       Urbana-Champaign, nor the names of its contributors may be used to
+       endorse or promote products derived from this Software without specific
+       prior written permission.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+ CONTRIBUTORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS WITH THE
+ SOFTWARE.
+
+License: BSD-2-clause
+ Redistribution and use in source and binary forms, with or without modification,
+ are permitted provided that the following conditions are met:
+ .
+    * Redistributions of source code must retain the above copyright notice,
+      this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright notice,
+      this list of conditions and the following disclaimer in the documentation
+      and/or other materials provided with the distribution.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR
+ ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License: BSD-3-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions
+ are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ 3. Neither the name of the copyright holder nor the names of contributors
+    may be used to endorse or promote products derived from this software
+    without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTOR(S) ``AS IS'' AND
+ ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTOR(S) BE LIABLE
+ FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ SUCH DAMAGE.
+
+License: BSD-4-clause
+ Redistribution and use in source and binary forms, with or without
+ modification, are permitted provided that the following conditions are met:
+ 1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+ 2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+ 3. All advertising materials mentioning features or use of this software
+    must display the following acknowledgement:
+    This product includes software developed by the Christian E. Hopps.
+ 4. The name of the author may not be used to endorse or promote products
+    derived from this software without specific prior written permission.
+ .
+ THIS SOFTWARE IS PROVIDED BY THE AUTHOR ''AS IS'' AND ANY
+ EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+ DISCLAIMED. IN NO EVENT SHALL <COPYRIGHT HOLDER> BE LIABLE FOR ANY
+ DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+License: Zlib
+ This software is provided 'as-is', without any express or implied warranty. In
+ no event will the authors be held liable for any damages arising from the use
+ of this software.
+ .
+ Permission is granted to anyone to use this software for any purpose, including
+ commercial applications, and to alter it and redistribute it freely, subject
+ to the following restrictions:
+ .
+ 1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ .
+ 2. Altered source versions must be plainly marked as such, and must not
+    be misrepresented as being the original software.
+ .
+ 3. This notice may not be removed or altered from any source distribution.
+
+License: MPL-1.1
+ On Debian systems, the complete text of the MPL-1.1 can be found in
+ /usr/share/common-licenses/MPL-1.1.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights to
+ use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ of the Software, and to permit persons to whom the Software is furnished to do
+ so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in
+ all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: Unicode
+ Copyright 1991-2019 Unicode, Inc. All rights reserved.
+ Distributed under the Terms of Use in http://www.unicode.org/copyright.html.
+ .
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of the Unicode data files and any associated documentation
+ (the "Data Files") or Unicode software and any associated documentation
+ (the "Software") to deal in the Data Files or Software
+ without restriction, including without limitation the rights to use,
+ copy, modify, merge, publish, distribute, and/or sell copies of
+ the Data Files or Software, and to permit persons to whom the Data Files
+ or Software are furnished to do so, provided that either
+ (a) this copyright and permission notice appear with all copies
+ of the Data Files or Software, or
+ (b) this copyright and permission notice appear in associated
+ Documentation.
+ .
+ THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF
+ ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+ WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT OF THIRD PARTY RIGHTS.
+ IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS
+ NOTICE BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL
+ DAMAGES, OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
+ DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+ PERFORMANCE OF THE DATA FILES OR SOFTWARE.
+ .
+ Except as contained in this notice, the name of a copyright holder
+ shall not be used in advertising or otherwise to promote the sale,
+ use or other dealings in these Data Files or Software without prior
+ written authorization of the copyright holder.

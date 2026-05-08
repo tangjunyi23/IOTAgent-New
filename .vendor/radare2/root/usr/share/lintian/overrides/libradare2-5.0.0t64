@@ -1,0 +1,5 @@
+# One package is enough for all those libs
+libradare2-5.0.0t64: package-name-doesnt-match-sonames
+# Every r2 release increases API, so no need to track symbols
+libradare2-5.0.0t64: no-symbols-control-file
+libradare2-5.0.0t64: package-name-doesnt-match-sonames libradare2-5.0.0

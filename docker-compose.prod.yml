@@ -1,0 +1,21 @@
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.manager
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-10000}:10000"
+    env_file:
+      - .env
+    environment:
+      HOST_WORKSPACE_DIR: ${HOST_WORKSPACE_DIR}
+    volumes:
+      - ${HOST_WORKSPACE_DIR}:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:10000/api/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

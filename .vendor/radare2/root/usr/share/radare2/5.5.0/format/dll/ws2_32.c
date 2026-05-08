@@ -1,0 +1,211 @@
+// SDB-CGEN V1.8.3
+// gcc -DMAIN=1 ws2_32.c ; ./a.out > ws2_32.h
+#include <ctype.h>
+#include <stdio.h>
+#include <string.h>
+
+struct kv { const char *name; const char *value; };
+static struct kv kvs[] = {
+  {"1","accept"}, 
+  {"10","ioctlsocket"}, 
+  {"100","WSASocketW"}, 
+  {"101","WSAAsyncSelect"}, 
+  {"102","WSAAsyncGetHostByAddr"}, 
+  {"103","WSAAsyncGetHostByName"}, 
+  {"104","WSAAsyncGetProtoByNumber"}, 
+  {"105","WSAAsyncGetProtoByName"}, 
+  {"106","WSAAsyncGetServByPort"}, 
+  {"107","WSAAsyncGetServByName"}, 
+  {"108","WSACancelAsyncRequest"}, 
+  {"109","WSASetBlockingHook"}, 
+  {"11","inet_addr"}, 
+  {"110","WSAUnhookBlockingHook"}, 
+  {"111","WSAGetLastError"}, 
+  {"112","WSASetLastError"}, 
+  {"113","WSACancelBlockingCall"}, 
+  {"114","WSAIsBlocking"}, 
+  {"115","WSAStartup"}, 
+  {"116","WSACleanup"}, 
+  {"117","WSAStringToAddressA"}, 
+  {"118","WSAStringToAddressW"}, 
+  {"119","WSAUnadvertiseProvider"}, 
+  {"12","inet_ntoa"}, 
+  {"120","WSAWaitForMultipleEvents"}, 
+  {"121","WSCDeinstallProvider"}, 
+  {"122","WSCEnableNSProvider"}, 
+  {"123","WSCEnumProtocols"}, 
+  {"124","WSCGetApplicationCategory"}, 
+  {"125","WSCGetProviderInfo"}, 
+  {"126","WSCGetProviderPath"}, 
+  {"127","WSCInstallNameSpace"}, 
+  {"128","WSCInstallNameSpaceEx"}, 
+  {"129","WSCInstallProvider"}, 
+  {"13","listen"}, 
+  {"130","WSCInstallProviderAndChains"}, 
+  {"131","WSCSetApplicationCategory"}, 
+  {"132","WSCSetProviderInfo"}, 
+  {"133","WSCUnInstallNameSpace"}, 
+  {"134","WSCUpdateProvider"}, 
+  {"135","WSCWriteNameSpaceOrder"}, 
+  {"136","WSCWriteProviderOrder"}, 
+  {"137","WahCloseApcHelper"}, 
+  {"138","WahCloseHandleHelper"}, 
+  {"139","WahCloseNotificationHandleHelper"}, 
+  {"14","ntohl"}, 
+  {"140","WahCloseSocketHandle"}, 
+  {"141","WahCloseThread"}, 
+  {"142","WahCompleteRequest"}, 
+  {"143","WahCreateHandleContextTable"}, 
+  {"144","WahCreateNotificationHandle"}, 
+  {"145","WahCreateSocketHandle"}, 
+  {"146","WahDestroyHandleContextTable"}, 
+  {"147","WahDisableNonIFSHandleSupport"}, 
+  {"148","WahEnableNonIFSHandleSupport"}, 
+  {"149","WahEnumerateHandleContexts"}, 
+  {"15","ntohs"}, 
+  {"150","WahInsertHandleContext"}, 
+  {"151","__WSAFDIsSet"}, 
+  {"152","WahNotifyAllProcesses"}, 
+  {"153","WahOpenApcHelper"}, 
+  {"154","WahOpenCurrentThread"}, 
+  {"155","WahOpenHandleHelper"}, 
+  {"156","WahOpenNotificationHandleHelper"}, 
+  {"157","WahQueueUserApc"}, 
+  {"158","WahReferenceContextByHandle"}, 
+  {"159","WahRemoveHandleContext"}, 
+  {"16","recv"}, 
+  {"160","WahWaitForNotification"}, 
+  {"161","WahWriteLSPEvent"}, 
+  {"162","freeaddrinfo"}, 
+  {"163","getaddrinfo"}, 
+  {"164","getnameinfo"}, 
+  {"165","inet_ntop"}, 
+  {"166","inet_pton"}, 
+  {"17","recvfrom"}, 
+  {"18","select"}, 
+  {"19","send"}, 
+  {"2","bind"}, 
+  {"20","sendto"}, 
+  {"21","setsockopt"}, 
+  {"22","shutdown"}, 
+  {"23","socket"}, 
+  {"24","WSApSetPostRoutine"}, 
+  {"25","FreeAddrInfoEx"}, 
+  {"26","FreeAddrInfoExW"}, 
+  {"27","FreeAddrInfoW"}, 
+  {"28","GetAddrInfoExA"}, 
+  {"29","GetAddrInfoExW"}, 
+  {"3","closesocket"}, 
+  {"30","GetAddrInfoW"}, 
+  {"31","GetNameInfoW"}, 
+  {"32","InetNtopW"}, 
+  {"33","InetPtonW"}, 
+  {"34","SetAddrInfoExA"}, 
+  {"35","SetAddrInfoExW"}, 
+  {"36","WPUCompleteOverlappedRequest"}, 
+  {"37","WSAAccept"}, 
+  {"38","WSAAddressToStringA"}, 
+  {"39","WSAAddressToStringW"}, 
+  {"4","connect"}, 
+  {"40","WSAAdvertiseProvider"}, 
+  {"41","WSACloseEvent"}, 
+  {"42","WSAConnect"}, 
+  {"43","WSAConnectByList"}, 
+  {"44","WSAConnectByNameA"}, 
+  {"45","WSAConnectByNameW"}, 
+  {"46","WSACreateEvent"}, 
+  {"47","WSADuplicateSocketA"}, 
+  {"48","WSADuplicateSocketW"}, 
+  {"49","WSAEnumNameSpaceProvidersA"}, 
+  {"5","getpeername"}, 
+  {"50","WSAEnumNameSpaceProvidersExA"}, 
+  {"500","WEP"}, 
+  {"51","gethostbyaddr"}, 
+  {"52","gethostbyname"}, 
+  {"53","getprotobyname"}, 
+  {"54","getprotobynumber"}, 
+  {"55","getservbyname"}, 
+  {"56","getservbyport"}, 
+  {"57","gethostname"}, 
+  {"58","WSAEnumNameSpaceProvidersExW"}, 
+  {"59","WSAEnumNameSpaceProvidersW"}, 
+  {"6","getsockname"}, 
+  {"60","WSAEnumNetworkEvents"}, 
+  {"61","WSAEnumProtocolsA"}, 
+  {"62","WSAEnumProtocolsW"}, 
+  {"63","WSAEventSelect"}, 
+  {"64","WSAGetOverlappedResult"}, 
+  {"65","WSAGetQOSByName"}, 
+  {"66","WSAGetServiceClassInfoA"}, 
+  {"67","WSAGetServiceClassInfoW"}, 
+  {"68","WSAGetServiceClassNameByClassIdA"}, 
+  {"69","WSAGetServiceClassNameByClassIdW"}, 
+  {"7","getsockopt"}, 
+  {"70","WSAHtonl"}, 
+  {"71","WSAHtons"}, 
+  {"72","WSAInstallServiceClassA"}, 
+  {"73","WSAInstallServiceClassW"}, 
+  {"74","WSAIoctl"}, 
+  {"75","WSAJoinLeaf"}, 
+  {"76","WSALookupServiceBeginA"}, 
+  {"77","WSALookupServiceBeginW"}, 
+  {"78","WSALookupServiceEnd"}, 
+  {"79","WSALookupServiceNextA"}, 
+  {"8","htonl"}, 
+  {"80","WSALookupServiceNextW"}, 
+  {"81","WSANSPIoctl"}, 
+  {"82","WSANtohl"}, 
+  {"83","WSANtohs"}, 
+  {"84","WSAPoll"}, 
+  {"85","WSAProviderCompleteAsyncCall"}, 
+  {"86","WSAProviderConfigChange"}, 
+  {"87","WSARecv"}, 
+  {"88","WSARecvDisconnect"}, 
+  {"89","WSARecvFrom"}, 
+  {"9","htons"}, 
+  {"90","WSARemoveServiceClass"}, 
+  {"91","WSAResetEvent"}, 
+  {"92","WSASend"}, 
+  {"93","WSASendDisconnect"}, 
+  {"94","WSASendMsg"}, 
+  {"95","WSASendTo"}, 
+  {"96","WSASetEvent"}, 
+  {"97","WSASetServiceA"}, 
+  {"98","WSASetServiceW"}, 
+  {"99","WSASocketA"}, 
+  {NULL, NULL}
+};
+// 0x55b8b3fd3c90
+// TODO
+typedef int (*GperfForeachCallback)(void *user, const char *k, const char *v);
+int gperf_ws2_32_foreach(GperfForeachCallback cb, void *user) {
+  int i = 0; while (kvs[i].name) {
+  cb (user, kvs[i].name, kvs[i].value);
+  i++;}
+  return 0;
+}
+const char *gperf_ws2_32_get(const char *s) {
+  int i = 0; while (kvs[i].name) {
+  if (!strcmp (s, kvs[i].name)) return kvs[i].value;
+  i++;}
+  return NULL;
+}
+#define sdb_hash_c_ws2_32(x,y) gperf_ws2_32_hash(x)
+const unsigned int gperf_ws2_32_hash(const char *s) {
+  int sum = strlen (s);
+  while (*s) { sum += *s; s++; }
+  return sum;
+}
+struct {const char *name;void *get;void *hash;void *foreach;} gperf_ws2_32 = {
+  .name = "ws2_32",
+  .get = &gperf_ws2_32_get,
+  .hash = &gperf_ws2_32_hash,
+  .foreach = &gperf_ws2_32_foreach
+};
+
+#if MAIN
+int main () {
+	const char *s = ((char*(*)(char*))gperf_ws2_32.get)("foo");
+	printf ("%s\n", s);
+}
+#endif
