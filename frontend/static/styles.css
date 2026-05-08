@@ -888,6 +888,10 @@ button {
   grid-template-columns: minmax(360px, 1.1fr) minmax(0, 1fr);
 }
 
+.view-grid-settings {
+  align-items: start;
+}
+
 .view-grid-tasks,
 .view-grid-reports {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1477,6 +1481,49 @@ button {
 .api-check-status {
   display: grid;
   gap: 16px;
+}
+
+.settings-section-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: var(--radius-md);
+  background: rgba(248, 250, 252, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.settings-section h4 {
+  margin: 4px 0 0;
+  color: var(--primary-deep);
+}
+
+.settings-fields-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.checkbox-field {
+  align-content: center;
+}
+
+.checkbox-field input {
+  inline-size: 18px;
+  block-size: 18px;
+}
+
+.settings-note {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  background: rgba(219, 234, 254, 0.72);
+  color: var(--muted);
+  line-height: 1.7;
 }
 
 .api-check-status {

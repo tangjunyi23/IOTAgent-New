@@ -11,7 +11,7 @@ from typing import Any
 
 from fastapi import UploadFile
 
-from app.config import Settings, parse_tool_id_csv
+from app.config import Settings, ensure_directories, parse_tool_id_csv
 from app.llm import LLMBackend, MissingDeepSeekLLMBackend, create_llm_backend, probe_deepseek_connection
 from app.model_router import ModelRouter, ModelSelection
 from app.models import (
@@ -32,10 +32,12 @@ from app.models import (
     NoteEntry,
     ReportExportFormat,
     SessionStatus,
+    SystemSettingsView,
     SharedMemoryEntry,
     SubAgentPayload,
     SubAgentStatus,
     SubAgentTask,
+    SystemSettingsUpdate,
     TokenUsageSnapshot,
     ToolCapability,
     utcnow,
@@ -79,6 +81,34 @@ class LLMNotReadyError(RuntimeError):
 
 
 class ManagerAgentService:
+    HOT_EDITABLE_SETTINGS: tuple[str, ...] = (
+        "deepseek_base_url",
+        "manager_regular_model",
+        "manager_hard_model",
+        "upload_dir",
+        "audit_dir",
+        "artifact_meta_dir",
+        "runtime_dir",
+        "skill_data_dir",
+        "knowledge_deleted_path",
+        "enable_docker_runtime",
+        "subagent_docker_image",
+        "subagent_docker_network_mode",
+        "host_workspace_dir",
+        "max_parallel_subagents",
+        "loop_threshold",
+        "note_recall_threshold",
+        "round_reset_threshold",
+        "agent_discussion_max_rounds",
+        "agent_coordination_timeout_seconds",
+        "llm_timeout_seconds",
+        "tool_output_limit",
+        "tool_timeout_seconds",
+        "ida_headless_path",
+        "host_ida_install_dir",
+        "host_ida_user_dir",
+        "rootfs_elf_tool_dir",
+    )
     INCOMPLETE_TOKENS: tuple[str, ...] = (
         "必要时",
         "如需",
@@ -314,13 +344,55 @@ class ManagerAgentService:
             status="ready" if configured else "missing_api_key",
         )
 
+    def system_settings_view(self) -> SystemSettingsView:
+        deepseek = self.deepseek_settings_view()
+        return SystemSettingsView(
+            deepseek_configured=deepseek.configured,
+            deepseek_key_preview=deepseek.key_preview,
+            deepseek_status=deepseek.status,
+            deepseek_base_url=self.settings.deepseek_base_url,
+            manager_regular_model=self.settings.manager_regular_model,
+            manager_hard_model=self.settings.manager_hard_model,
+            upload_dir=str(self.settings.upload_dir),
+            audit_dir=str(self.settings.audit_dir),
+            artifact_meta_dir=str(self.settings.artifact_meta_dir),
+            runtime_dir=str(self.settings.runtime_dir),
+            skill_data_dir=str(self.settings.skill_data_dir),
+            knowledge_deleted_path=str(self.settings.knowledge_deleted_path),
+            enable_docker_runtime=self.settings.enable_docker_runtime,
+            subagent_docker_image=self.settings.subagent_docker_image,
+            subagent_docker_network_mode=self.settings.subagent_docker_network_mode,
+            host_workspace_dir=str(self.settings.host_workspace_dir),
+            max_parallel_subagents=self.settings.max_parallel_subagents,
+            loop_threshold=self.settings.loop_threshold,
+            note_recall_threshold=self.settings.note_recall_threshold,
+            round_reset_threshold=self.settings.round_reset_threshold,
+            agent_discussion_max_rounds=self.settings.agent_discussion_max_rounds,
+            agent_coordination_timeout_seconds=self.settings.agent_coordination_timeout_seconds,
+            llm_timeout_seconds=self.settings.llm_timeout_seconds,
+            tool_output_limit=self.settings.tool_output_limit,
+            tool_timeout_seconds=self.settings.tool_timeout_seconds,
+            ida_headless_path=str(self.settings.ida_headless_path) if self.settings.ida_headless_path else None,
+            host_ida_install_dir=str(self.settings.host_ida_install_dir) if self.settings.host_ida_install_dir else None,
+            host_ida_user_dir=str(self.settings.host_ida_user_dir) if self.settings.host_ida_user_dir else None,
+            rootfs_elf_tool_dir=str(self.settings.rootfs_elf_tool_dir) if self.settings.rootfs_elf_tool_dir else None,
+        )
+
     def update_deepseek_api_key(self, api_key: str | None) -> DeepSeekSettingsView:
         normalized = (api_key or "").strip() or None
-        self.settings.deepseek_api_key = normalized
-        self._persist_env_value("DEEPSEEK_API_KEY", normalized)
-        self.llm_backend = create_llm_backend(self.settings)
-        self._refresh_tool_runtime()
+        self._apply_settings_patch({"deepseek_api_key": normalized})
         return self.deepseek_settings_view()
+
+    def update_system_settings(self, payload: SystemSettingsUpdate) -> SystemSettingsView:
+        updates = {
+            key: value
+            for key, value in payload.model_dump(exclude_unset=True).items()
+            if key in self.HOT_EDITABLE_SETTINGS
+        }
+        if not updates:
+            return self.system_settings_view()
+        self._apply_settings_patch(updates)
+        return self.system_settings_view()
 
     async def check_deepseek_api(self, api_key: str | None = None) -> DeepSeekCheckResult:
         normalized = (api_key or "").strip() or None
@@ -2952,6 +3024,49 @@ class ManagerAgentService:
         if len(normalized) <= 8:
             return "*" * len(normalized)
         return f"{normalized[:4]}...{normalized[-4:]}"
+
+    def _apply_settings_patch(self, updates: dict[str, Any]) -> None:
+        if not updates:
+            return
+        candidate_payload = self.settings.model_dump()
+        touched_fields = set(updates)
+        for field_name, value in updates.items():
+            candidate_payload[field_name] = self._normalize_setting_patch_value(value)
+
+        validated = Settings(**candidate_payload)
+        ensure_directories(validated)
+
+        for field_name in Settings.model_fields:
+            setattr(self.settings, field_name, getattr(validated, field_name))
+
+        for field_name in touched_fields:
+            env_key = self._settings_env_key(field_name)
+            rendered = self._render_env_setting_value(getattr(validated, field_name))
+            self._persist_env_value(env_key, rendered)
+
+        self.router = ModelRouter(self.settings)
+        self.llm_backend = create_llm_backend(self.settings)
+        self.pwn_skill = PwnSkillPack(self.settings)
+        self._refresh_tool_runtime()
+
+    def _normalize_setting_patch_value(self, value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+        return value
+
+    def _settings_env_key(self, field_name: str) -> str:
+        field = Settings.model_fields.get(field_name)
+        return str(field.alias or field_name).upper()
+
+    def _render_env_setting_value(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, Path):
+            return str(value)
+        return str(value)
 
     def _persist_env_value(self, key: str, value: str | None) -> None:
         env_path = self.settings.env_file_path

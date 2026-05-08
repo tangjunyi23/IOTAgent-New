@@ -166,11 +166,14 @@ curl -fsSL https://raw.githubusercontent.com/tangjunyi23/IOTAgent-New/main/scrip
 - 首次执行会用 `.env.example` 生成 `.env`，并把 `HOST_WORKSPACE_DIR` 固定为部署目录
 - `deploy.sh` 会在缺少依赖时自动安装 `git`、`curl` 和 `docker`
 - 日常运维可以直接使用 `scripts/manage.sh`
+- 部署后也可以直接用 `scripts/start.sh` 和 `scripts/stop.sh` 做快速启停
 
 部署后常用命令：
 
 ```bash
 cd /srv/iot-agent-new
+./scripts/start.sh
+./scripts/stop.sh
 ./scripts/manage.sh status
 ./scripts/manage.sh logs
 ./scripts/manage.sh update

@@ -6,7 +6,7 @@ const VIEW_META = {
   "task-management": { kicker: "审计项目任务管理", title: "子代理进度与协作日志" },
   reports: { kicker: "报告生成", title: "最终报告预览与导出" },
   knowledge: { kicker: "知识库", title: "历史审计结论沉淀" },
-  settings: { kicker: "系统设置", title: "API Key、系统状态与工具能力" },
+  settings: { kicker: "系统设置", title: "API Key、存储路径与运行参数热更新" },
 };
 
 const ROLE_LABELS = {
@@ -102,6 +102,35 @@ const LOW_FINDING_PATTERNS = [
   /加固/,
 ];
 
+const SYSTEM_SETTINGS_FIELDS = [
+  "deepseek_base_url",
+  "manager_regular_model",
+  "manager_hard_model",
+  "upload_dir",
+  "audit_dir",
+  "artifact_meta_dir",
+  "runtime_dir",
+  "skill_data_dir",
+  "knowledge_deleted_path",
+  "enable_docker_runtime",
+  "subagent_docker_image",
+  "subagent_docker_network_mode",
+  "host_workspace_dir",
+  "max_parallel_subagents",
+  "loop_threshold",
+  "note_recall_threshold",
+  "round_reset_threshold",
+  "agent_discussion_max_rounds",
+  "agent_coordination_timeout_seconds",
+  "llm_timeout_seconds",
+  "tool_output_limit",
+  "tool_timeout_seconds",
+  "ida_headless_path",
+  "host_ida_install_dir",
+  "host_ida_user_dir",
+  "rootfs_elf_tool_dir",
+];
+
 const state = {
   sessions: [],
   selectedSessionId: null,
@@ -114,6 +143,7 @@ const state = {
   toolCapabilities: [],
   knowledgeEntries: [],
   deepseekSettings: null,
+  systemSettings: null,
   apiCheckResult: null,
   selectedProjectSessionIds: new Set(),
   selectedCompletedSessionIds: new Set(),
@@ -171,9 +201,11 @@ const elements = {
   systemStatusGrid: document.getElementById("system-status-grid"),
   toolGrid: document.getElementById("tool-grid"),
   deepseekSettingsForm: document.getElementById("deepseek-settings-form"),
+  systemSettingsForm: document.getElementById("system-settings-form"),
   settingsApiKeyInput: document.getElementById("settings-api-key"),
   settingsApiKeyHint: document.getElementById("settings-api-key-hint"),
   saveApiKeyButton: document.getElementById("save-api-key-button"),
+  saveSystemSettingsButton: document.getElementById("save-system-settings-button"),
   checkApiButton: document.getElementById("check-api-button"),
   apiCheckStatus: document.getElementById("api-check-status"),
   createTaskModal: document.getElementById("create-task-modal"),
@@ -2562,6 +2594,29 @@ function renderDeepSeekSettings() {
   `;
 }
 
+function getSystemSettingsInput(fieldName) {
+  return elements.systemSettingsForm?.elements.namedItem(fieldName);
+}
+
+function populateSystemSettingsForm() {
+  if (!state.systemSettings || !elements.systemSettingsForm) {
+    return;
+  }
+
+  for (const fieldName of SYSTEM_SETTINGS_FIELDS) {
+    const input = getSystemSettingsInput(fieldName);
+    if (!(input instanceof HTMLInputElement)) {
+      continue;
+    }
+    const value = state.systemSettings[fieldName];
+    if (input.type === "checkbox") {
+      input.checked = Boolean(value);
+    } else {
+      input.value = value == null ? "" : String(value);
+    }
+  }
+}
+
 function renderToolCapabilities() {
   if (!state.toolCapabilities.length) {
     elements.toolGrid.innerHTML = buildEmptyBlock("暂无工具能力", "等待后端返回当前可调用工具和可用状态。");
@@ -2708,6 +2763,20 @@ async function ensureKnowledgeEntries({ force = false, maxAgeMs = 15000 } = {}) 
 
 async function loadDeepSeekSettings() {
   state.deepseekSettings = await requestJson(`${apiPrefix}/settings/deepseek`);
+  renderDeepSeekSettings();
+  renderSystemStatus();
+}
+
+async function loadSystemSettings() {
+  state.systemSettings = await requestJson(`${apiPrefix}/settings/system`);
+  state.deepseekSettings = {
+    configured: state.systemSettings.deepseek_configured,
+    key_preview: state.systemSettings.deepseek_key_preview,
+    base_url: state.systemSettings.deepseek_base_url,
+    provider: "deepseek",
+    status: state.systemSettings.deepseek_status,
+  };
+  populateSystemSettingsForm();
   renderDeepSeekSettings();
   renderSystemStatus();
 }
@@ -2970,7 +3039,11 @@ async function handleSaveApiKey(event) {
     });
     state.apiCheckResult = null;
     elements.settingsApiKeyInput.value = "";
-    await loadRuntimeProfile();
+    await Promise.all([
+      loadRuntimeProfile(),
+      loadToolCapabilities(),
+      loadSystemSettings(),
+    ]);
     renderDeepSeekSettings();
     notify(apiKey ? "API Key 已保存。" : "API Key 已清除。", "设置已更新");
   } catch (error) {
@@ -2978,6 +3051,61 @@ async function handleSaveApiKey(event) {
   } finally {
     elements.saveApiKeyButton.disabled = false;
     elements.saveApiKeyButton.textContent = "保存 API Key";
+  }
+}
+
+function collectSystemSettingsPayload() {
+  const payload = {};
+  for (const fieldName of SYSTEM_SETTINGS_FIELDS) {
+    const input = getSystemSettingsInput(fieldName);
+    if (!(input instanceof HTMLInputElement)) {
+      continue;
+    }
+    if (input.type === "checkbox") {
+      payload[fieldName] = input.checked;
+      continue;
+    }
+    const rawValue = input.value.trim();
+    if (input.type === "number") {
+      payload[fieldName] = rawValue ? Number(rawValue) : null;
+      continue;
+    }
+    payload[fieldName] = rawValue || null;
+  }
+  return payload;
+}
+
+async function handleSaveSystemSettings(event) {
+  event.preventDefault();
+  elements.saveSystemSettingsButton.disabled = true;
+  elements.saveSystemSettingsButton.textContent = "保存中...";
+
+  try {
+    state.systemSettings = await requestJson(`${apiPrefix}/settings/system`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectSystemSettingsPayload()),
+    });
+    state.deepseekSettings = {
+      configured: state.systemSettings.deepseek_configured,
+      key_preview: state.systemSettings.deepseek_key_preview,
+      base_url: state.systemSettings.deepseek_base_url,
+      provider: "deepseek",
+      status: state.systemSettings.deepseek_status,
+    };
+    state.apiCheckResult = null;
+    populateSystemSettingsForm();
+    await Promise.all([
+      loadRuntimeProfile(),
+      loadToolCapabilities(),
+    ]);
+    renderDeepSeekSettings();
+    notify("系统配置已保存，新的上传和新任务会立即使用最新设置。", "设置已更新");
+  } catch (error) {
+    notify(`保存系统配置失败: ${error.message}`, "保存失败");
+  } finally {
+    elements.saveSystemSettingsButton.disabled = false;
+    elements.saveSystemSettingsButton.textContent = "保存系统设置";
   }
 }
 
@@ -3207,6 +3335,7 @@ function bindStaticEvents() {
   elements.taskFileInput.addEventListener("change", updateTaskFileMeta);
   elements.createTaskForm.addEventListener("submit", handleCreateTask);
   elements.deepseekSettingsForm.addEventListener("submit", handleSaveApiKey);
+  elements.systemSettingsForm.addEventListener("submit", handleSaveSystemSettings);
   elements.checkApiButton.addEventListener("click", handleCheckApi);
   elements.closeAppDialogButton.addEventListener("click", () => closeAppDialog(false));
   elements.appDialogCancelButton.addEventListener("click", () => closeAppDialog(false));
@@ -3307,7 +3436,7 @@ async function bootstrap() {
     loadSessions({ keepSelection: false }),
     loadToolCapabilities(),
     loadRuntimeProfile(),
-    loadDeepSeekSettings(),
+    loadSystemSettings(),
     loadKnowledgeEntries({ render: false }),
   ]);
 

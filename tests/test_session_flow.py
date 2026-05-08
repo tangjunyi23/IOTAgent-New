@@ -616,6 +616,54 @@ def test_deepseek_settings_can_be_saved_and_checked(tmp_path: Path, monkeypatch)
         assert result["status"] == "ready"
 
 
+def test_system_settings_can_be_hot_updated_and_change_upload_target(tmp_path: Path):
+    settings = build_settings(tmp_path)
+    app = create_app(settings)
+    new_upload_dir = tmp_path / "hot" / "uploads"
+    new_runtime_dir = tmp_path / "hot" / "runtime"
+
+    with TestClient(app) as client:
+        current = client.get("/api/v1/settings/system")
+        assert current.status_code == 200
+        assert current.json()["upload_dir"] == str(settings.upload_dir)
+
+        updated = client.put(
+            "/api/v1/settings/system",
+            json={
+                "deepseek_base_url": "https://api.deepseek.local",
+                "manager_regular_model": "deepseek-v4-test",
+                "upload_dir": str(new_upload_dir),
+                "runtime_dir": str(new_runtime_dir),
+                "tool_timeout_seconds": 17,
+                "enable_docker_runtime": False,
+            },
+        )
+        assert updated.status_code == 200
+        payload = updated.json()
+        assert payload["upload_dir"] == str(new_upload_dir)
+        assert payload["runtime_dir"] == str(new_runtime_dir)
+        assert payload["tool_timeout_seconds"] == 17
+        assert payload["deepseek_base_url"] == "https://api.deepseek.local"
+        assert settings.upload_dir == new_upload_dir
+        assert settings.runtime_dir == new_runtime_dir
+        assert new_upload_dir.exists()
+        assert new_runtime_dir.exists()
+
+        env_text = settings.env_file_path.read_text(encoding="utf-8")
+        assert f'UPLOAD_DIR="{new_upload_dir}"' in env_text
+        assert f'RUNTIME_DIR="{new_runtime_dir}"' in env_text
+        assert 'TOOL_TIMEOUT_SECONDS="17"' in env_text
+
+        artifact = client.post(
+            "/api/v1/artifacts",
+            files={"file": ("sample.bin", BytesIO(b"ABCD"), "application/octet-stream")},
+        )
+        assert artifact.status_code == 200
+        stored_path = Path(artifact.json()["stored_path"])
+        assert stored_path.exists()
+        assert stored_path.is_relative_to(new_upload_dir)
+
+
 def test_tool_can_be_disabled_and_enabled_via_api(tmp_path: Path):
     settings = build_settings(tmp_path)
     app = create_app(settings)

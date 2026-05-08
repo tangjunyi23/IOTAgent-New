@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import ValidationError
 
 from app.manager import LLMNotReadyError, ManagerAgentService
 from app.models import (
@@ -14,6 +15,8 @@ from app.models import (
     DeepSeekSettingsView,
     KnowledgeEntry,
     ReportExportFormat,
+    SystemSettingsUpdate,
+    SystemSettingsView,
     ToolToggleUpdate,
     ToolCapability,
 )
@@ -50,6 +53,24 @@ async def update_deepseek_settings(
     manager: ManagerAgentService = Depends(get_manager),
 ) -> DeepSeekSettingsView:
     return manager.update_deepseek_api_key(payload.api_key)
+
+
+@router.get("/settings/system", response_model=SystemSettingsView)
+async def system_settings(
+    manager: ManagerAgentService = Depends(get_manager),
+) -> SystemSettingsView:
+    return manager.system_settings_view()
+
+
+@router.put("/settings/system", response_model=SystemSettingsView)
+async def update_system_settings(
+    payload: SystemSettingsUpdate,
+    manager: ManagerAgentService = Depends(get_manager),
+) -> SystemSettingsView:
+    try:
+        return manager.update_system_settings(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 @router.post("/settings/deepseek/check", response_model=DeepSeekCheckResult)

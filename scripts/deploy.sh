@@ -274,3 +274,5 @@ fi
 log "deployment finished"
 log "frontend: http://${host_ip}:${resolved_port}/"
 log "manage: cd ${APP_DIR} && ./scripts/manage.sh status"
+log "start: cd ${APP_DIR} && ./scripts/start.sh"
+log "stop: cd ${APP_DIR} && ./scripts/stop.sh"

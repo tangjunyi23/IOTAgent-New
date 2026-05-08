@@ -17,6 +17,8 @@ def test_frontend_index_served():
         assert "新建审计任务" in response.text
         assert "上传任务文件并创建审计" in response.text
         assert "保存 API Key" in response.text
+        assert "保存系统设置" in response.text
+        assert "路径存储、模型配置与运行参数" in response.text
         assert "批量删除历史任务" in response.text
         assert "批量删除任务" in response.text
         assert "批量删除历史" in response.text
@@ -45,6 +47,7 @@ def test_frontend_static_js_served():
         assert "analyst-notes" not in response.text
         assert "handleDeleteSession" in response.text
         assert "handleCheckApi" in response.text
+        assert "handleSaveSystemSettings" in response.text
         assert "handleToggleTool" in response.text
         assert "renderActivityStreamIncremental" in response.text
         assert "buildCoordinationDescriptor" in response.text
@@ -57,6 +60,7 @@ def test_frontend_static_js_served():
         assert '"Static Analysis"' in response.text
         assert '"Exploitability Review"' in response.text
         assert "ensureAuditRuntimeReady" in response.text
+        assert "settings/system" in response.text
         assert 'document.addEventListener("toggle", (event) => {' in response.text
         assert "审计后端未就绪" in response.text
         assert "window.alert" not in response.text

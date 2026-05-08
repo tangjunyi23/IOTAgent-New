@@ -20,16 +20,19 @@ class Settings(BaseSettings):
     app_name: str = "Binary Audit Platform"
     api_prefix: str = "/api/v1"
 
-    data_dir: Path = ROOT_DIR / "data"
-    upload_dir: Path = ROOT_DIR / "data" / "uploads"
-    audit_dir: Path = ROOT_DIR / "data" / "audits"
-    artifact_meta_dir: Path = ROOT_DIR / "data" / "artifacts"
-    runtime_dir: Path = ROOT_DIR / "data" / "runtime"
-    frontend_dir: Path = ROOT_DIR / "frontend"
-    progress_log_path: Path = ROOT_DIR / "docs" / "PROGRESS.md"
-    skill_data_dir: Path = ROOT_DIR / "data" / "skills"
-    knowledge_deleted_path: Path = ROOT_DIR / "data" / "knowledge" / "deleted_entries.json"
-    env_file_path: Path = ROOT_DIR / ".env"
+    data_dir: Path = Field(default=ROOT_DIR / "data", alias="DATA_DIR")
+    upload_dir: Path = Field(default=ROOT_DIR / "data" / "uploads", alias="UPLOAD_DIR")
+    audit_dir: Path = Field(default=ROOT_DIR / "data" / "audits", alias="AUDIT_DIR")
+    artifact_meta_dir: Path = Field(default=ROOT_DIR / "data" / "artifacts", alias="ARTIFACT_META_DIR")
+    runtime_dir: Path = Field(default=ROOT_DIR / "data" / "runtime", alias="RUNTIME_DIR")
+    frontend_dir: Path = Field(default=ROOT_DIR / "frontend", alias="FRONTEND_DIR")
+    progress_log_path: Path = Field(default=ROOT_DIR / "docs" / "PROGRESS.md", alias="PROGRESS_LOG_PATH")
+    skill_data_dir: Path = Field(default=ROOT_DIR / "data" / "skills", alias="SKILL_DATA_DIR")
+    knowledge_deleted_path: Path = Field(
+        default=ROOT_DIR / "data" / "knowledge" / "deleted_entries.json",
+        alias="KNOWLEDGE_DELETED_PATH",
+    )
+    env_file_path: Path = Field(default=ROOT_DIR / ".env", alias="ENV_FILE_PATH")
 
     deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
     deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")

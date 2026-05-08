@@ -320,6 +320,67 @@ class DeepSeekCheckResult(BaseModel):
     checked_at: datetime = Field(default_factory=utcnow)
 
 
+class SystemSettingsView(BaseModel):
+    deepseek_configured: bool
+    deepseek_key_preview: str | None = None
+    deepseek_status: str
+    deepseek_base_url: str
+    manager_regular_model: str
+    manager_hard_model: str
+    upload_dir: str
+    audit_dir: str
+    artifact_meta_dir: str
+    runtime_dir: str
+    skill_data_dir: str
+    knowledge_deleted_path: str
+    enable_docker_runtime: bool
+    subagent_docker_image: str
+    subagent_docker_network_mode: str
+    host_workspace_dir: str
+    max_parallel_subagents: int
+    loop_threshold: int
+    note_recall_threshold: int
+    round_reset_threshold: int
+    agent_discussion_max_rounds: int
+    agent_coordination_timeout_seconds: float
+    llm_timeout_seconds: int
+    tool_output_limit: int
+    tool_timeout_seconds: int
+    ida_headless_path: str | None = None
+    host_ida_install_dir: str | None = None
+    host_ida_user_dir: str | None = None
+    rootfs_elf_tool_dir: str | None = None
+
+
+class SystemSettingsUpdate(BaseModel):
+    deepseek_base_url: str | None = None
+    manager_regular_model: str | None = None
+    manager_hard_model: str | None = None
+    upload_dir: str | None = None
+    audit_dir: str | None = None
+    artifact_meta_dir: str | None = None
+    runtime_dir: str | None = None
+    skill_data_dir: str | None = None
+    knowledge_deleted_path: str | None = None
+    enable_docker_runtime: bool | None = None
+    subagent_docker_image: str | None = None
+    subagent_docker_network_mode: str | None = None
+    host_workspace_dir: str | None = None
+    max_parallel_subagents: int | None = None
+    loop_threshold: int | None = None
+    note_recall_threshold: int | None = None
+    round_reset_threshold: int | None = None
+    agent_discussion_max_rounds: int | None = None
+    agent_coordination_timeout_seconds: float | None = None
+    llm_timeout_seconds: int | None = None
+    tool_output_limit: int | None = None
+    tool_timeout_seconds: int | None = None
+    ida_headless_path: str | None = None
+    host_ida_install_dir: str | None = None
+    host_ida_user_dir: str | None = None
+    rootfs_elf_tool_dir: str | None = None
+
+
 class ToolToggleUpdate(BaseModel):
     enabled: bool
 
