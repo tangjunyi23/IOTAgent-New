@@ -132,10 +132,17 @@ export HOST_WORKSPACE_DIR=$(pwd)
 
 ## 一键部署到服务器
 
-生产部署建议直接使用仓库内的部署脚本和生产 Compose 文件：
+如果服务器已经装好 `git`、`docker`、`docker compose`，直接执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tangjunyi23/IOTAgent-New/main/scripts/deploy.sh \
+  | DEEPSEEK_API_KEY=your_key_here bash
+```
+
+如果是全新 Linux 服务器，希望脚本自动安装依赖后再部署，执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tangjunyi23/IOTAgent-New/main/scripts/bootstrap-linux.sh \
   | DEEPSEEK_API_KEY=your_key_here bash
 ```
 
@@ -157,6 +164,18 @@ curl -fsSL https://raw.githubusercontent.com/tangjunyi23/IOTAgent-New/main/scrip
 - 默认会启用 `DockerSubAgentRuntime`，并自动构建 `binary-audit-subagent:latest`
 - 生产编排文件为 `docker-compose.prod.yml`
 - 首次执行会用 `.env.example` 生成 `.env`，并把 `HOST_WORKSPACE_DIR` 固定为部署目录
+- `deploy.sh` 会在缺少依赖时自动安装 `git`、`curl` 和 `docker`
+- 日常运维可以直接使用 `scripts/manage.sh`
+
+部署后常用命令：
+
+```bash
+cd /srv/iot-agent-new
+./scripts/manage.sh status
+./scripts/manage.sh logs
+./scripts/manage.sh update
+./scripts/manage.sh restart
+```
 
 ## 当前审计能力边界
 

@@ -3,6 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.manager
+    init: true
     restart: unless-stopped
     ports:
       - "${APP_PORT:-10000}:10000"

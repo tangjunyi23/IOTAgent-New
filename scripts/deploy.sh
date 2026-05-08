@@ -12,6 +12,7 @@ MANAGER_REGULAR_MODEL="${MANAGER_REGULAR_MODEL:-deepseek-v4-flash}"
 MANAGER_HARD_MODEL="${MANAGER_HARD_MODEL:-deepseek-v4-pro}"
 DEEPSEEK_BASE_URL="${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-iot-agent-new}"
+AUTO_INSTALL_DEPS="${AUTO_INSTALL_DEPS:-true}"
 
 log() {
   printf '[deploy] %s\n' "$*"
@@ -30,6 +31,106 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+run_as_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+    return
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    sudo "$@"
+    return
+  fi
+  die "root privileges are required to install missing dependencies"
+}
+
+detect_os() {
+  [ -f /etc/os-release ] || die "unsupported OS: /etc/os-release not found"
+  . /etc/os-release
+  OS_ID="${ID:-}"
+  OS_LIKE="${ID_LIKE:-}"
+}
+
+install_base_packages() {
+  detect_os
+  case "${OS_ID}:${OS_LIKE}" in
+    ubuntu:*|debian:*|*:debian*)
+      run_as_root apt-get update
+      run_as_root apt-get install -y ca-certificates curl git
+      ;;
+    amzn:*|rhel:*|centos:*|rocky:*|almalinux:*|fedora:*|*:rhel*|*:fedora*)
+      if command -v dnf >/dev/null 2>&1; then
+        run_as_root dnf install -y ca-certificates curl git
+      else
+        run_as_root yum install -y ca-certificates curl git
+      fi
+      ;;
+    *)
+      die "unsupported Linux distribution for automatic package install: ${OS_ID:-unknown}"
+      ;;
+  esac
+}
+
+ensure_base_packages() {
+  if command -v curl >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then
+    return
+  fi
+  [ "${AUTO_INSTALL_DEPS}" = "true" ] || die "git/curl are missing and AUTO_INSTALL_DEPS=false"
+  log "installing missing base packages"
+  install_base_packages
+}
+
+install_docker() {
+  [ "${AUTO_INSTALL_DEPS}" = "true" ] || die "docker is missing and AUTO_INSTALL_DEPS=false"
+  ensure_base_packages
+  log "installing docker engine"
+  curl -fsSL https://get.docker.com | run_as_root sh
+  if command -v systemctl >/dev/null 2>&1; then
+    run_as_root systemctl enable --now docker
+  elif command -v service >/dev/null 2>&1; then
+    run_as_root service docker start
+  fi
+}
+
+ensure_docker() {
+  if command -v docker >/dev/null 2>&1; then
+    return
+  fi
+  install_docker
+}
+
+ensure_docker_ready() {
+  if docker info >/dev/null 2>&1; then
+    return
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    run_as_root systemctl start docker || true
+  elif command -v service >/dev/null 2>&1; then
+    run_as_root service docker start || true
+  fi
+  docker info >/dev/null 2>&1 || die "docker daemon is not reachable for the current user"
+}
+
+install_compose_plugin() {
+  [ "${AUTO_INSTALL_DEPS}" = "true" ] || die "docker compose is missing and AUTO_INSTALL_DEPS=false"
+  detect_os
+  case "${OS_ID}:${OS_LIKE}" in
+    ubuntu:*|debian:*|*:debian*)
+      run_as_root apt-get update
+      run_as_root apt-get install -y docker-compose-plugin
+      ;;
+    amzn:*|rhel:*|centos:*|rocky:*|almalinux:*|fedora:*|*:rhel*|*:fedora*)
+      if command -v dnf >/dev/null 2>&1; then
+        run_as_root dnf install -y docker-compose-plugin
+      else
+        run_as_root yum install -y docker-compose-plugin
+      fi
+      ;;
+    *)
+      die "unsupported Linux distribution for docker compose installation: ${OS_ID:-unknown}"
+      ;;
+  esac
+}
+
 choose_compose() {
   if docker compose version >/dev/null 2>&1; then
     COMPOSE_CMD=(docker compose)
@@ -37,6 +138,12 @@ choose_compose() {
   fi
   if command -v docker-compose >/dev/null 2>&1; then
     COMPOSE_CMD=(docker-compose)
+    return
+  fi
+  log "installing docker compose plugin"
+  install_compose_plugin
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD=(docker compose)
     return
   fi
   die "docker compose is not installed"
@@ -99,8 +206,9 @@ wait_for_health() {
   return 1
 }
 
-require_command git
-require_command docker
+ensure_base_packages
+ensure_docker
+ensure_docker_ready
 choose_compose
 
 mkdir -p "$(dirname "$APP_DIR")"
@@ -165,3 +273,4 @@ fi
 
 log "deployment finished"
 log "frontend: http://${host_ip}:${resolved_port}/"
+log "manage: cd ${APP_DIR} && ./scripts/manage.sh status"
