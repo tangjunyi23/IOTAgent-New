@@ -231,12 +231,16 @@ async def test_deepseek_draft_plan_prompt_requires_attacker_server_and_cia_evide
     assert isinstance(messages, list)
     system_prompt = messages[0]["content"]
     user_prompt = messages[1]["content"]
-    assert "Attacker Condition、Server Condition 与 Security Impact（CIA）" in system_prompt
-    assert "Attacker Condition（攻击者条件）" in user_prompt
-    assert "Server Condition（服务器条件）" in user_prompt
-    assert "Security Impact（安全影响）" in user_prompt
-    assert "CIA 三要素分别会受到什么影响" in user_prompt
-    assert "函数调用链分析" in system_prompt
+    # Attacker/Server/CIA are required in the draft_plan user prompt (3rd part).
+    assert "Attacker Condition" in user_prompt
+    assert "Server Condition" in user_prompt
+    assert "Security Impact" in user_prompt
+    # Crash-is-not-endpoint progression constraint stays in the system prompt.
+    assert "信息泄露" in system_prompt
+    assert "getshell" in system_prompt
+    # Sanity: prompts should stay concise after the verbosity trim.
+    assert len(system_prompt) < 600
+    assert len(user_prompt) < 2000
 
 
 @pytest.mark.asyncio
@@ -279,11 +283,11 @@ async def test_deepseek_finalize_prompt_requires_attacker_server_and_cia_breakdo
     assert isinstance(messages, list)
     system_prompt = messages[0]["content"]
     user_prompt = messages[1]["content"]
-    assert "Attacker Condition、Server Condition 和 Security Impact（CIA）" in system_prompt
-    assert "网络位置（外网/内网/本地）" in system_prompt
-    assert "机密性（Confidentiality）/ 完整性（Integrity）/ 可用性（Availability）逐项说明" in system_prompt
-    assert "Attacker Condition（网络位置 / 权限 / 具体触发输入）" in user_prompt
-    assert "Server Condition（服务端前提 / 默认配置 / 插件或功能开关 / OS 或环境边界）" in user_prompt
-    assert "Security Impact，并按 CIA 分别写机密性 / 完整性 / 可用性" in user_prompt
-    assert "函数名 + 函数地址 + 调用点地址" in user_prompt
-    assert "Exploit Stage（RCE / getshell 结论）" in user_prompt
+    assert "Attacker Condition、Server Condition、Security Impact（CIA）" in system_prompt
+    assert "Attacker Condition（网络位置/权限/触发输入）" in user_prompt
+    assert "Server Condition（服务端前提/默认配置/环境边界）" in user_prompt
+    assert "Security Impact（按 CIA" in user_prompt
+    assert "Exploit Stage（是否到 RCE/getshell" in user_prompt
+    # Sanity: prompts should stay concise after the verbosity trim.
+    assert len(system_prompt) < 700
+    assert len(user_prompt) < 2000

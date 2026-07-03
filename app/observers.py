@@ -167,3 +167,111 @@ class ContextWindowObserver:
                 payload={"source": intervention.source},
             ),
         ]
+
+
+def estimate_token_count(messages: list[dict[str, str]]) -> int:
+    """Estimate token count for an OpenAI-style message list.
+
+    Vendor-agnostic: tries tiktoken (cl100k_base) if installed, else falls back
+    to a char/4 heuristic. The char/4 fallback overestimates for CJK-heavy
+    content, which is safe for a cap (compresses earlier rather than later).
+    """
+    total_chars = 0
+    for message in messages:
+        content = str(message.get("content") or "")
+        total_chars += len(content) + 4  # 4 tokens framing overhead per message
+    try:
+        import tiktoken  # type: ignore[import-not-found]
+
+        enc = tiktoken.get_encoding("cl100k_base")
+        return sum(len(enc.encode(str(message.get("content") or ""))) + 4 for message in messages)
+    except Exception:
+        return total_chars // 4
+
+
+class ContextCompressionObserver:
+    """Compresses conversation history when token count exceeds context_length.
+
+    Replaces older messages with an LLM-generated summary, keeping recent
+    messages and core notes. The ContextWindowObserver (round-threshold) stays
+    registered as a hard backstop. Requires an LLMBackend with compress_context.
+    """
+
+    def __init__(self, settings, llm_backend) -> None:
+        self.settings = settings
+        self.llm_backend = llm_backend
+        self._compressing = False
+
+    async def handle(self, event: AuditEvent, state: AgentObservationState) -> list[AuditEvent]:
+        if event.kind != EventKind.REASONING_ROUND or self._compressing:
+            return []
+        token_count = estimate_token_count(state.messages)
+        context_length = int(getattr(self.settings, "context_length", 500000) or 500000)
+        if token_count <= context_length:
+            return []
+        self._compressing = True
+        try:
+            await self._compress_messages(state, token_count)
+        finally:
+            self._compressing = False
+        return [
+            AuditEvent(
+                kind=EventKind.CONTEXT_RESET,
+                message=f"Context compressed at {token_count} tokens",
+                agent_id=state.agent_id,
+                payload={"compressed": True, "tokens_before": token_count},
+            ),
+        ]
+
+    async def _compress_messages(self, state: AgentObservationState, token_count: int) -> None:
+        ratio = float(getattr(self.settings, "context_compression_ratio", 0.5) or 0.5)
+        keep_tokens = int(int(getattr(self.settings, "context_length", 500000)) * ratio)
+        # Walk backwards to find the split point: keep recent messages whose
+        # cumulative token count is <= keep_tokens. Compress everything before.
+        messages = state.messages
+        if len(messages) <= 2:
+            return  # nothing to compress
+        keep_count = 0
+        running = 0
+        for idx in range(len(messages) - 1, -1, -1):
+            running += estimate_token_count([messages[idx]])
+            if running > keep_tokens:
+                break
+            keep_count = idx + 1
+        keep_count = max(keep_count, 1)  # always keep at least the system prompt
+        to_compress = messages[:keep_count]
+        if not to_compress:
+            return
+        # Preserve the very first system prompt; compress the rest of the old block.
+        first_system = messages[0] if messages[0].get("role") == "system" else None
+        compress_target = to_compress[1:] if first_system else to_compress
+        if not compress_target:
+            return
+        from app.model_router import ModelSelection
+
+        compress_model = getattr(self.settings, "context_compress_model", None) or getattr(
+            self.settings, "manager_regular_model", None
+        )
+        selection = ModelSelection(model=compress_model, route_reason="context-compression")
+        compression_prompt = [
+            {"role": "system", "content": "你是上下文压缩器。把以下子代理历史对话压缩成摘要，保留所有已验证事实、函数地址、exploit stage、阻塞和核心结论，不要丢失具体证据引用。"},
+            {"role": "user", "content": "\n\n".join(
+                f"[{m.get('role','')}]: {m.get('content','')}" for m in compress_target
+            )},
+        ]
+        try:
+            reply = await self.llm_backend.compress_context(
+                messages=compression_prompt,
+                selection=selection,
+            )
+            summary = (reply.content or "").strip() or "历史上下文已压缩，无可用摘要。"
+        except Exception:
+            # Compression failed — fall back to a hard reset to keep the agent alive.
+            state.reset_context()
+            return
+        new_messages: list[dict[str, str]] = []
+        if first_system:
+            new_messages.append(first_system)
+        new_messages.append({"role": "system", "content": f"历史上下文摘要：\n{summary}"})
+        new_messages.extend(messages[keep_count:])
+        state.messages = new_messages

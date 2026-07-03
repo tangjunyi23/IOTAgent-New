@@ -590,8 +590,8 @@ function setView(viewName, { animate = true } = {}) {
 
   const outgoing = current.animate(
     [
-      { opacity: 1, transform: "translateY(0) scale(1)", filter: "blur(0px)" },
-      { opacity: 0, transform: "translateY(18px) scale(0.985)", filter: "blur(8px)" },
+      { opacity: 1, transform: "translateY(0) scale(1)" },
+      { opacity: 0, transform: "translateY(18px) scale(0.985)" },
     ],
     {
       duration: 240,
@@ -601,8 +601,8 @@ function setView(viewName, { animate = true } = {}) {
   );
   const incoming = next.animate(
     [
-      { opacity: 0, transform: "translateY(22px) scale(0.985)", filter: "blur(10px)" },
-      { opacity: 1, transform: "translateY(0) scale(1)", filter: "blur(0px)" },
+      { opacity: 0, transform: "translateY(22px) scale(0.985)" },
+      { opacity: 1, transform: "translateY(0) scale(1)" },
     ],
     {
       duration: 320,
@@ -1993,26 +1993,32 @@ function buildAgentCard(task, sessionEntries) {
       </div>
       <p class="agent-objective">${escapeHtml(truncateText(task.objective || "", 140))}</p>
       <p class="agent-copy">${escapeHtml(latestEvent ? describeEventMessage(latestEvent, task.role) : "子代理正在准备执行当前任务。")}</p>
-      <div class="agent-evidence-tags">
-        <span>Token ${escapeHtml(formatTokenCount(tokenUsage.total_tokens))}</span>
-        <span>调用 ${escapeHtml(formatTokenCount(tokenUsage.llm_calls))}</span>
-        <span>${escapeHtml(formatTokenBreakdown(tokenUsage))}</span>
-      </div>
-      ${reusedTools.length ? `
+      <details class="agent-card-details" data-panel-key="agent-details:${escapeHtml(task.id)}" ${getPanelOpenAttr(`agent-details:${task.id}`, false)}>
+        <summary>
+          <span>证据标签</span>
+          <strong>Token ${escapeHtml(formatTokenCount(tokenUsage.total_tokens))}${reusedTools.length ? ` · ${escapeHtml(String(reusedTools.length))} 复用` : ""}${plannedSteps.length ? ` · ${escapeHtml(String(plannedSteps.length))} 步` : ""}</strong>
+        </summary>
         <div class="agent-evidence-tags">
-          ${reusedTools.map((item) => `<span>复用 ${escapeHtml(item)}</span>`).join("")}
+          <span>Token ${escapeHtml(formatTokenCount(tokenUsage.total_tokens))}</span>
+          <span>调用 ${escapeHtml(formatTokenCount(tokenUsage.llm_calls))}</span>
+          <span>${escapeHtml(formatTokenBreakdown(tokenUsage))}</span>
         </div>
-      ` : ""}
-      ${plannedSteps.length ? `
-        <div class="agent-evidence-tags">
-          ${plannedSteps.slice(0, 4).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-        </div>
-      ` : ""}
-      ${expectedEvidence.length ? `
-        <div class="agent-evidence-tags">
-          ${expectedEvidence.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
-        </div>
-      ` : ""}
+        ${reusedTools.length ? `
+          <div class="agent-evidence-tags">
+            ${reusedTools.map((item) => `<span>复用 ${escapeHtml(item)}</span>`).join("")}
+          </div>
+        ` : ""}
+        ${plannedSteps.length ? `
+          <div class="agent-evidence-tags">
+            ${plannedSteps.slice(0, 4).map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+          </div>
+        ` : ""}
+        ${expectedEvidence.length ? `
+          <div class="agent-evidence-tags">
+            ${expectedEvidence.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+          </div>
+        ` : ""}
+      </details>
       <details class="agent-collab-note" data-panel-key="${escapeHtml(collabPanelKey)}" ${getPanelOpenAttr(collabPanelKey, false)}>
         <summary>
           <span>协作状态</span>
@@ -2444,7 +2450,19 @@ function renderTaskManagementView() {
     }
   );
   rememberExpandedPanels(elements.taskArchiveList);
-  elements.taskArchiveList.innerHTML = buildSubagentArchivePanel(session);
+  const archivePanelKey = `archive:${session.id}`;
+  const archiveOpen = isPanelExpanded(archivePanelKey, false);
+  elements.taskArchiveList.innerHTML = `
+    <details class="archive-panel-details" data-panel-key="${escapeHtml(archivePanelKey)}" ${archiveOpen ? "open" : ""}>
+      <summary>
+        <span>任务管理归档</span>
+        <strong>${escapeHtml(String((session?.subagents || []).length))} 条历史子代理</strong>
+      </summary>
+      <div class="archive-panel-body">
+        ${buildSubagentArchivePanel(session)}
+      </div>
+    </details>
+  `;
   renderActivityStreamIncremental(
     elements.progressLogList,
     progressEntries,
@@ -2840,6 +2858,35 @@ function renderToolCapabilities() {
     .join("");
 }
 
+function renderActiveView() {
+  // Only render the currently visible view — rebuilding all 8 views on every
+  // poll / WS event was the main source of UI jank.
+  switch (state.currentView) {
+    case "home":
+      renderHomeView();
+      break;
+    case "projects":
+      renderProjectsView();
+      break;
+    case "task-management":
+      renderTaskManagementView();
+      break;
+    case "reports":
+      renderReportsView();
+      break;
+    case "knowledge":
+      renderKnowledgeView();
+      break;
+    case "settings":
+      renderSystemStatus();
+      renderLlmSettings();
+      renderToolCapabilities();
+      break;
+    default:
+      renderHomeView();
+  }
+}
+
 function renderAll() {
   pruneSelections();
   ensureSelectedSession();
@@ -2847,14 +2894,7 @@ function renderAll() {
   if (!state.activeViewTransition) {
     showViewInstantly(state.currentView);
   }
-  renderHomeView();
-  renderProjectsView();
-  renderTaskManagementView();
-  renderReportsView();
-  renderKnowledgeView();
-  renderSystemStatus();
-  renderLlmSettings();
-  renderToolCapabilities();
+  renderActiveView();
 }
 
 async function loadSessions({ keepSelection = true } = {}) {
@@ -3564,7 +3604,7 @@ function startAutoRefresh() {
     } catch (error) {
       console.error(error);
     }
-  }, 3000);
+  }, 5000);
 }
 
 function stopAutoRefresh() {

@@ -265,6 +265,11 @@ class SubAgentPayload(BaseModel):
     coordination_dir: str | None = None
     peer_count: int = 0
     peer_roles: list[str] = Field(default_factory=list)
+    # When True, the subagent worker continues this role's existing conversation
+    # state (messages history) from a prior round instead of starting fresh.
+    # Keyed by (session_id, role). Docker runtime does not persist in-process
+    # state — see Phase D for file-based persistence.
+    continue_role_session: bool = False
 
 
 class SubAgentResult(BaseModel):

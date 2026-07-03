@@ -149,3 +149,45 @@ def test_manager_stops_when_only_blockers_and_no_new_evidence(tmp_path: Path):
     should_continue, reason = manager._should_continue_manager_rounds(session, 1)
     assert should_continue is False
     assert "工具阻塞" in reason
+
+
+def test_manager_does_not_stop_when_failed_tool_has_completed_evidence_same_session(tmp_path: Path):
+    """Reproduces session 7b5305c7: function_disasm failed (rc=1) then self-retried
+    to completed (rc=0) within the same subagent. The intermittent failure must
+    NOT be treated as a capability blocker that triggers a spurious round 2."""
+    settings = build_settings(tmp_path)
+    manager = ManagerAgentService(settings, JsonRepository(settings), AuditEventBroker())
+    session = AuditSession(
+        request=AuditRequest(
+            title="Self-Retried Tool",
+            objective="验证间歇失败已自重试成功时不再误判为阻塞。",
+            target_path="/tmp/sample",
+        ),
+        subagents=[
+            SubAgentTask(
+                role="triage",
+                objective="triage",
+                model="test-hard-model",
+                target_path="/tmp/sample",
+                round_index=1,
+                status=SubAgentStatus.COMPLETED,
+                evidence=[
+                    CommandEvidence(
+                        command_id="function_disasm",
+                        command=["objdump"],
+                        return_code=1,
+                        status="failed",
+                    ),
+                    CommandEvidence(
+                        command_id="function_disasm",
+                        command=["objdump"],
+                        return_code=0,
+                        status="completed",
+                    ),
+                ],
+            )
+        ],
+    )
+    should_continue, reason = manager._should_continue_manager_rounds(session, 1)
+    # The self-retried tool is NOT a true blocker -> must not cite "工具阻塞".
+    assert "工具阻塞" not in reason

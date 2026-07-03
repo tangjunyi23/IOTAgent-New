@@ -65,9 +65,13 @@ def test_manager_highlights_deduplicate_similar_notes(tmp_path: Path):
         key_section = key_section.split("## RCE / getshell 结论", 1)[0]
     highlight_lines = [line for line in key_section.splitlines() if line.startswith("- ")]
 
-    assert len(highlight_lines) == 3
-    assert any("主漏洞" in line for line in highlight_lines)
-    assert any("利用条件" in line for line in highlight_lines)
+    # First line is now the synthetic getshell verdict; the remaining lines are
+    # the deduplicated promoted notes (3 after dedup).
+    assert highlight_lines[0].lstrip("- ").startswith("利用结论：getshell")
+    deduped_lines = highlight_lines[1:]
+    assert len(deduped_lines) == 3
+    assert any("主漏洞" in line for line in deduped_lines)
+    assert any("利用条件" in line for line in deduped_lines)
     assert any("ROP Gadget" in line for line in highlight_lines)
     assert not any("fgets" in line for line in highlight_lines if "主漏洞" not in line)
 
@@ -373,3 +377,148 @@ def test_manager_report_can_promote_rce_and_getshell_from_poc_payload(tmp_path: 
     assert "证据闭环: vuln @ 0x401260 / overflow-candidate / 已验证 getshell" in report
     assert "### vuln @ 0x401260" in report
     assert "gdb_poc" in report
+
+
+def test_report_surfaces_getshell_boundary_when_no_gdb_poc(tmp_path: Path):
+    """Reproduces session 7b5305c7: exploit-strategy found a ret2win backdoor
+    (secure@0x80485fd + system@plt) but no gdb_poc ran, so the report used to
+    emit generic boilerplate and never surface the boundary / missing step."""
+    settings = build_settings(tmp_path)
+    manager = ManagerAgentService(settings, JsonRepository(settings), AuditEventBroker())
+    request = AuditRequest(
+        title="Getshell Boundary",
+        objective="验证无 gdb_poc 时报告仍写出利用边界与缺口。",
+        target_path="/tmp/sample",
+    )
+    session = AuditSession(
+        request=request,
+        subagents=[
+            SubAgentTask(
+                role="exploit-strategy",
+                objective="exploit",
+                model="deepseek-v4-flash",
+                target_path="/tmp/sample",
+                output_summary=(
+                    "## 利用性判断\n"
+                    "- 当前边界：secure@0x80485fd ret2win 后门 + system@plt@0x8048490 可达。\n"
+                    "- 缺口：缺 gdb cyclic 偏移确认 + gdb_poc 动态验证，尚未证明 RIP 可控。\n"
+                ),
+                promoted_notes=[
+                    "当前边界：secure@0x80485fd ret2win 后门 + system@plt 可达。",
+                ],
+            )
+        ],
+    )
+
+    report = manager._compose_final_report(session)
+
+    assert "## RCE / getshell 结论" in report
+    assert "secure@0x80485fd" in report
+    assert "缺口" in report
+    assert "gdb cyclic 偏移确认" in report
+    # 关键结论 first line states the getshell verdict.
+    key_section = report.split("## 关键结论", 1)[1].split("## RCE / getshell 结论", 1)[0]
+    first = [line for line in key_section.splitlines() if line.startswith("- ")][0]
+    assert first.lstrip("- ").startswith("利用结论：getshell 未达成")
+
+
+def test_report_function_section_excludes_crt_noise(tmp_path: Path):
+    """CRT thunks (__do_global_dtors_aux, .rand, .setvbuf) with only fact lines
+    must not appear in the function-level section; only vuln-bearing functions do."""
+    settings = build_settings(tmp_path)
+    manager = ManagerAgentService(settings, JsonRepository(settings), AuditEventBroker())
+    request = AuditRequest(
+        title="CRT Noise Filter",
+        objective="验证函数级结论只保留有漏洞信号的函数。",
+        target_path="/tmp/sample",
+    )
+    session = AuditSession(
+        request=request,
+        subagents=[
+            SubAgentTask(
+                role="static-analysis",
+                objective="static",
+                model="deepseek-v4-flash",
+                target_path="/tmp/sample",
+                evidence=[
+                    CommandEvidence(
+                        command_id="function_disasm",
+                        command=["objdump"],
+                        return_code=0,
+                        stdout=(
+                            '{"functions":['
+                            '{"name":"main","address":"0x8048648","stack_frame_bytes":128,'
+                            '"call_sites":[{"from":"0x80486ae","target":"gets@plt",'
+                            '"issue":{"type":"overflow-candidate","evidence":"gets no length limit"}}]},'
+                            '{"name":"__do_global_dtors_aux","address":"0x80485b0","stack_frame_bytes":16,'
+                            '"call_sites":[{"from":"0x80485bf","target":"deregister_tm_clones"}]},'
+                            '{"name":".setvbuf","address":"0x80484d0","stack_frame_bytes":8,'
+                            '"call_sites":[]}'
+                            ']}'
+                        ),
+                    )
+                ],
+            )
+        ],
+    )
+
+    report = manager._compose_final_report(session)
+
+    assert "### main @ 0x8048648" in report
+    assert "__do_global_dtors_aux" not in report
+    assert ".setvbuf" not in report
+
+
+def test_report_getshell_verdict_is_not_reached_when_only_info_leak(tmp_path: Path):
+    """When gdb_poc reached only info-leak (not getshell), the 关键结论 lead
+    line must say 未达成 — not 已达成. Regression for the 7b5305c7 follow-up
+    where 'reached' was mis-detected because the RCE head lacked '未验证到'."""
+    settings = build_settings(tmp_path)
+    manager = ManagerAgentService(settings, JsonRepository(settings), AuditEventBroker())
+    request = AuditRequest(
+        title="Info Leak Only",
+        objective="验证 info-leak 阶段不误判为 getshell 达成。",
+        target_path="/tmp/sample",
+    )
+    session = AuditSession(
+        request=request,
+        subagents=[
+            SubAgentTask(
+                role="dynamic-analysis",
+                objective="dynamic",
+                model="deepseek-v4-pro",
+                target_path="/tmp/sample",
+                evidence=[
+                    CommandEvidence(
+                        command_id="gdb_poc",
+                        command=["gdb", "-q", "--args", "/tmp/sample"],
+                        return_code=0,
+                        stdout=json.dumps(
+                            {
+                                "validated": True,
+                                "issue_type": "format-string",
+                                "function": {"name": "main", "address": "0x4011d0"},
+                                "gdb_observation": {
+                                    "breakpoint_line": "=> 0x401244 <main+116>: call printf@plt",
+                                    "probe_line": '0x7fff...: "FMT_PROBE.%p.%p.%p.%p"',
+                                },
+                                "native_probe": {
+                                    "probe_line": "FMT_PROBE.0x7ae776497963.(nil).(nil).(nil)",
+                                    "stdout_preview": "FMT_PROBE.0x7ae776497963.(nil).(nil).(nil)",
+                                },
+                            }
+                        ),
+                    )
+                ],
+                output_summary=(
+                    "- 当前边界：main 格式串可控，已验证信息泄露；缺口：未观察到写原语/RIP 可控，未到 getshell。"
+                ),
+            )
+        ],
+    )
+
+    report = manager._compose_final_report(session)
+    key_section = report.split("## 关键结论", 1)[1].split("## RCE / getshell 结论", 1)[0]
+    first = [line for line in key_section.splitlines() if line.startswith("- ")][0]
+    assert first.lstrip("- ").startswith("利用结论：getshell 未达成")
+    assert "已达成" not in first

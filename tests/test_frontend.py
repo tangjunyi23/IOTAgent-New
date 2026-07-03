@@ -8,8 +8,8 @@ def test_frontend_index_served():
         response = client.get("/")
         assert response.status_code == 200
         assert "思而听二进制漏洞审计平台" in response.text
-        assert "/static/styles.css?v=20260526e" in response.text
-        assert "/static/app.js?v=20260526e" in response.text
+        assert "/static/styles.css?v=20260703a" in response.text
+        assert "/static/app.js?v=20260703a" in response.text
         assert "首页" in response.text
         assert "审计项目" in response.text
         assert "审计项目任务管理" in response.text

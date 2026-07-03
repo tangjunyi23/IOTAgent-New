@@ -126,6 +126,14 @@ class LLMBackend(Protocol):
     ) -> SimpleReply:
         ...
 
+    async def compress_context(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        selection: ModelSelection,
+    ) -> SimpleReply:
+        ...
+
 
 class MockLLMBackend:
     def __init__(self, settings: Settings | None = None) -> None:
@@ -265,6 +273,19 @@ class MockLLMBackend:
                     ),
                 ]
             )
+        )
+
+    async def compress_context(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        selection: ModelSelection,
+    ) -> SimpleReply:
+        # Local mock: return a compact marker so tests can exercise the
+        # compression observer without a real LLM call.
+        return SimpleReply(
+            "[compressed context summary]",
+            model=selection.model,
         )
 
     def _build_evidence_summary(
@@ -740,6 +761,14 @@ class MissingLLMBackend:
     ) -> SimpleReply:
         raise RuntimeError(self.message)
 
+    async def compress_context(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        selection: ModelSelection,
+    ) -> SimpleReply:
+        raise RuntimeError(self.message)
+
 
 class OpenAICompatibleLLMBackend:
     def __init__(self, settings: Settings) -> None:
@@ -793,7 +822,7 @@ class OpenAICompatibleLLMBackend:
         last_error: Exception | None = None
         for kwargs in candidate_kwargs:
             try:
-                response = await self.client.chat.completions.create(**kwargs)
+                response = await self._call_with_retry(kwargs)
                 break
             except Exception as exc:
                 if not self._is_feature_compatibility_error(exc):
@@ -818,6 +847,16 @@ class OpenAICompatibleLLMBackend:
             cached_tokens=self._usage_value(prompt_details, "cached_tokens"),
         )
 
+    async def compress_context(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        selection: ModelSelection,
+    ) -> SimpleReply:
+        # Reuse _complete (with its retry + thinking-fallback logic) for the
+        # compression call. The caller supplies a compression system prompt.
+        return await self._complete(messages, selection)
+
     def _is_feature_compatibility_error(self, exc: Exception) -> bool:
         message = str(exc).lower()
         compatibility_tokens = (
@@ -830,6 +869,67 @@ class OpenAICompatibleLLMBackend:
             "not permitted",
         )
         return any(token in message for token in compatibility_tokens)
+
+    def _is_retryable_error(self, exc: Exception) -> bool:
+        """Whether a transient server/network error is worth a backoff retry.
+
+        Vendor-agnostic: relies on ``status_code`` attribute (OpenAI SDK and
+        most OpenAI-compatible servers populate it) plus message keywords, so
+        it works for any OpenAI-compatible backend, not just one provider.
+        """
+        # Never retry feature-compatibility errors — those need a different
+        # kwargs variant, not the same one again.
+        if self._is_feature_compatibility_error(exc):
+            return False
+        status = getattr(exc, "status_code", None)
+        if isinstance(status, int) and status in (408, 409, 425, 429, 500, 502, 503, 504):
+            return True
+        # OpenAI SDK connection/timeout errors do not carry a status code but
+        # are raised as specific types or carry recognizable messages.
+        type_name = type(exc).__name__.lower()
+        if "timeout" in type_name or "connection" in type_name or "connection" in type_name:
+            return True
+        message = str(exc).lower()
+        retryable_tokens = (
+            "system is busy",
+            "overloaded",
+            "rate limit",
+            "rate_limit",
+            "service unavailable",
+            "temporarily unavailable",
+            "try again later",
+            "timeout",
+            "timed out",
+            "connection",
+            "bad gateway",
+            "internal server error",
+        )
+        return any(token in message for token in retryable_tokens)
+
+    async def _call_with_retry(self, kwargs: dict[str, object]) -> object:
+        """Call ``chat.completions.create`` with backoff retries on transient errors.
+
+        Feature-compatibility errors are NOT retried here (the caller loops over
+        kwargs variants for that); only transient server/network errors trigger
+        a backoff retry of the same kwargs.
+        """
+        max_retries = max(0, int(getattr(getattr(self, "settings", None), "llm_max_retries", 3) or 0))
+        base_delay = float(getattr(getattr(self, "settings", None), "llm_retry_base_delay_seconds", 0.8) or 0.0)
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return await self.client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                last_error = exc
+                if not self._is_retryable_error(exc):
+                    raise
+                if attempt >= max_retries:
+                    break
+                # Exponential backoff with jitter capped at 8s per sleep.
+                delay = min(8.0, base_delay * (2 ** attempt))
+                await asyncio.sleep(delay)
+        assert last_error is not None
+        raise last_error
 
     def _usage_value(self, payload: object, field_name: str) -> int:
         if payload is None:
@@ -950,14 +1050,10 @@ class OpenAICompatibleLLMBackend:
             {
                 "role": "system",
                 "content": (
-                    "你是在线二进制漏洞审计平台的中央 ManagerAgent。"
-                    "在分配子代理前，你必须先深度思考，再选择最优角色组合与协作路径。"
-                    "规划质量优先于响应速度，必须先把验证路径、协作依赖和成功判据想清楚，再进入执行。"
-                    "你必须主动节省 token：优先复用共享记忆、历史结论和已完成工具结果，"
-                    "只为尚未覆盖的证据缺口规划下一轮，禁止让子代理重复上一轮已经完成的基础工具链。"
-                    "不要固化输出固定角色列表，必须根据目标、难度、工具可用性和上下文笔记动态决策。"
-                    "你只能从以下角色中选择：triage, static-analysis, dynamic-analysis, exploitability-review, exploit-strategy。"
-                    "输出必须是严格 JSON，不能带 Markdown 代码块，不能带解释性前后缀。"
+                    "你是漏洞审计平台的中央 ManagerAgent，负责为子代理分工。"
+                    "优先复用共享记忆与已完成工具，只为未覆盖的证据缺口规划下一轮，禁止重跑已完成的基础工具链。"
+                    "角色只能从 triage / static-analysis / dynamic-analysis / exploitability-review / exploit-strategy 中按需选择。"
+                    "输出严格 JSON，不带 Markdown 或解释前后缀。"
                 ),
             },
             {
@@ -968,7 +1064,7 @@ class OpenAICompatibleLLMBackend:
                     f"难度: {request.difficulty}\n"
                     f"最大子代理数: {request.max_subagents}\n"
                     f"标签: {', '.join(request.tags) or '无'}\n"
-                    f"分析师笔记:\n{rendered_notes}\n\n"
+                    f"分析师笔记:\n{rendered_notes}\n"
                     f"当前可用工具:\n{rendered_tools}\n\n"
                     "请输出 JSON，字段如下：\n"
                     "{\n"
@@ -997,13 +1093,9 @@ class OpenAICompatibleLLMBackend:
                     "  ]\n"
                     "}\n\n"
                     "要求：\n"
-                    "- roles 数量在 1 到最大子代理数之间\n"
-                    "- 若可形成多角色交叉验证，优先保持至少 2 个角色\n"
-                    "- objective 必须具体到工具证据、函数、调用关系或利用链要点\n"
-                    "- stage_goal 必须显式使用 未验证 / 信息泄露 / 栈覆盖 / RIP 可控 / RCE / getshell 这些边界语义\n"
-                    "- expected_evidence 必须是可直接进入报告或工作台的具体证据\n"
-                    "- coordination_focus 优先写可驱动下一轮协作的问题，而不是泛泛而谈\n"
-                    "- success_criteria 必须明确本轮是否要推进到信息泄露、栈覆盖、RIP 可控、RCE 或 getshell 的哪一级"
+                    "- roles 数量在 1 到最大子代理数之间，优先保持至少 2 个角色做交叉验证\n"
+                    "- stage_goal 必须显式使用 未验证 / 信息泄露 / 栈覆盖 / RIP 可控 / RCE / getshell 边界语义\n"
+                    "- success_criteria 必须明确本轮要推进到上述哪一级"
                 ),
             },
         ]
@@ -1034,19 +1126,11 @@ class OpenAICompatibleLLMBackend:
             {
                 "role": "system",
                 "content": (
-                    "你是在线二进制漏洞审计平台的子代理。"
-                    "你必须围绕漏洞审计给出简洁、可执行的计划，不能陷入重复命令。"
-                    "分析精度优先于执行速度，不要为了快速结束而过早停止取证。"
-                    "你必须优先复用共享记忆与历史证据；除非当前轮次明确要求补缺口，否则不要重跑已完成的基础工具。"
-                    "若已有崩溃证据，不要把“再次验证崩溃”当成终点；必须优先寻找泄露、偏移、栈覆盖、RIP 控制或可复用利用脚本的推进机会。"
-                    "如果 canary / PIE / Full RELRO 阻断了最终利用，也必须明确当前最接近的可证明阶段，以及继续逼近需要的最小证据。"
-                    "不要输出空泛表述，必须把计划落到工具、证据和验证目标。"
-                    "每一步都要说明该证据将把 exploit stage 推进到哪里，尤其要回答能否逼近 RCE / getshell。"
-                    "计划里必须提前考虑后续要如何回答 Attacker Condition、Server Condition 与 Security Impact（CIA），不要把这些关键条件留到最终总结时才临时补写。"
-                    "只要样本里出现危险函数或危险导入，计划中必须明确覆盖函数调用链分析，至少要回答 谁调用了谁、调用点地址是什么、危险函数位于哪一个函数上下文。"
-                    "你与其他子代理共享 mailbox；如果遇到阻塞，要主动提出协查问题，并明确希望同伴补哪一段证据。"
-                    "严禁把外部知识、常见经验或数据库内容伪装成已验证事实。"
-                    "如果输入证据没有提供，就不能声称“已验证”。"
+                    "你是漏洞审计平台的子代理，负责给出简洁可执行的计划。"
+                    "优先复用共享记忆与历史证据，不重跑已完成的基础工具。"
+                    "已有崩溃证据时，不要把“再次验证崩溃”当终点；必须推进到 信息泄露 / 栈覆盖 / RIP 可控 / RCE / getshell 中明确的一级，canary/PIE/Full RELRO 阻断时也要写清当前最接近的阶段与缺步。"
+                    "若上下文已有某条事实，不要在协作消息里重复广播；只广播本轮新增证据或阻塞。"
+                    "严禁把外部知识伪装成已验证事实；输入证据未提供就不能声称“已验证”。"
                 ),
             },
             {
@@ -1064,17 +1148,13 @@ class OpenAICompatibleLLMBackend:
                     f"预期证据:\n{expected_evidence}\n"
                     f"核心笔记:\n{rendered_notes}\n"
                     f"当前干预指令:\n{rendered_interventions}\n\n"
-                    "请输出三部分，且每部分都要具体：\n"
-                    "1. 审计计划：按执行顺序给出 3-5 条，每条说明要看的工具和目的\n"
-                    "2. 关键漏洞假设：只写当前证据能支撑的方向，不要臆造漏洞\n"
-                    "3. 需要采集的证据：明确写出要从哪些工具结果里确认什么，并覆盖后续回答以下问题所需的证据来源：\n"
-                    "- Attacker Condition（攻击者条件）：攻击者需要处于什么网络位置、需要什么权限、要注入什么具体输入\n"
-                    "- Server Condition（服务器条件）：服务端需要什么前提、默认配置/插件/OS/环境边界是什么\n"
-                    "- Security Impact（安全影响）：CIA 三要素分别会受到什么影响\n"
+                    "请输出三部分：\n"
+                    "1. 审计计划：3-5 条，写明工具与目的\n"
+                    "2. 关键漏洞假设：只写当前证据能支撑的方向，不臆造\n"
+                    "3. 需采集的证据：从哪些工具结果确认什么，并覆盖 Attacker Condition（网络位置/权限/注入输入）、Server Condition（默认配置/OS/环境边界）、Security Impact（CIA 三要素）\n"
                     "额外要求：\n"
-                    "- 只能规划当前状态为“可用”的工具；遇到不可用工具必须写替代证据路径\n"
-                    "- 若上一轮已经完成 file/checksec/readelf/strings 等基础工具，默认禁止再次规划这些基础工具，除非明确写明这次补的是哪一个新缺口\n"
-                    "- 不能把“再次确认崩溃”写成终点，必须明确计划要推进到 leak / 栈覆盖 / canary 命中 / RIP 可控 / RCE / getshell 中的哪一级"
+                    "- 只能规划“可用”工具，不可用工具要写替代路径\n"
+                    "- 已完成 file/checksec/readelf/strings 等基础工具的，禁止重规划，除非写明补的新缺口"
                 ),
             },
         ]
@@ -1104,21 +1184,12 @@ class OpenAICompatibleLLMBackend:
             {
                 "role": "system",
                 "content": (
-                    "你是在线二进制漏洞审计平台的子代理。"
-                    "请基于证据输出可执行结论，避免空泛表述。"
-                    "每条发现都必须显式引用工具名或工具输出，不能重复模板化总结。"
-                    "严禁引用未出现在工具证据或核心笔记中的外部事实、公开资料、哈希对照、CVE 信息或发行版结论。"
-                    "所有判断必须仅基于输入证据；如果只是推断，必须明确写“推断”并说明依据。"
-                    "不要输出寒暄，不要写“已验证”除非证据中真的出现了验证结果。"
-                    "不要输出“下一步建议”或未来动作，本轮最终报告只允许写已经完成的取证结论。"
-                    "必须明确写清当前 exploit stage 到哪一步：未形成原语 / 信息泄露 / 栈覆盖 / RIP 可控 / RCE / getshell。"
-                    "如果没有达到 RCE 或 getshell，必须直接写明卡在哪一段已完成边界，不能只写笼统的“可利用性判断”。"
-                    "只要本轮在验证漏洞、利用链或 PoC，就必须单独列出 Attacker Condition、Server Condition 和 Security Impact（CIA）。"
-                    "Attacker Condition 必须写清攻击者所需网络位置（外网/内网/本地）、所需权限（未认证/访客/管理员等）以及触发漏洞所需的具体输入、参数、报文或 payload。"
-                    "Server Condition 必须写清服务端前提，例如默认或非默认配置、特定插件/功能开关、OS/架构/部署环境限制；如果证据不足，必须明确写“尚未证明”。"
-                    "Security Impact 不能只写“很危险”，必须按机密性（Confidentiality）/ 完整性（Integrity）/ 可用性（Availability）逐项说明；若某项未见直接影响，也要明确写“未见直接影响”。"
-                    "若工具证据里已经出现 gdb_poc 的 exploit_script 或 poc 字段，必须优先说明已产出脚本化 PoC，不能只复述 GDB 命令。"
-                    "若当前只证明崩溃，必须明确写出为何仍未到 leak / 栈覆盖 / RIP 可控，以及现有证据里最接近推进的一步是什么。"
+                    "你是漏洞审计平台的子代理，基于证据输出可执行结论。"
+                    "每条发现必须引用工具名或工具输出，严禁引用未出现在证据中的外部事实/CVE/哈希对照；推断必须标“推断”。"
+                    "不要写“下一步建议”或未来动作，只写已完成的取证结论。"
+                    "必须显式写清当前 exploit stage：未形成原语 / 信息泄露 / 栈覆盖 / RIP 可控 / RCE / getshell；未到 RCE 时直接写明卡在哪个边界与缺步。"
+                    "验证漏洞/利用链/PoC 时必须单独列出 Attacker Condition、Server Condition、Security Impact（CIA）；证据不足写“尚未证明”，某项无直接影响写“未见直接影响”。"
+                    "证据里有 exploit_script/poc 时必须写明“已产出脚本化 PoC”，不只复述 GDB 命令。"
                 ),
             },
             {
@@ -1126,29 +1197,17 @@ class OpenAICompatibleLLMBackend:
                 "content": (
                     f"角色: {task.role}\n"
                     f"目标: {task.objective}\n"
-                    f"上一轮计划:\n{plan}\n\n"
-                    f"跨轮延续约束:\n{continuation_brief}\n\n"
-                    f"核心笔记:\n{rendered_notes}\n\n"
-                    f"干预指令:\n{rendered_interventions}\n\n"
+                    f"上一轮计划:\n{plan}\n"
+                    f"跨轮延续约束:\n{continuation_brief}\n"
+                    f"核心笔记:\n{rendered_notes}\n"
+                    f"干预指令:\n{rendered_interventions}\n"
                     f"工具证据:\n{rendered_evidence}\n\n"
-                    "请输出四部分，并严格满足这些要求：\n"
-                    "- 每条发现都要引用至少一个工具名，例如 checksec/readelf/gdb/angr/IDA\n"
-                    "- 必须单独说明 failed/unavailable 的工具及其影响\n"
-                    "- 如果证据不足，不要捏造漏洞结论，只能写“尚未证明”并指出还缺什么证据\n"
-                    "- 重点下沉到函数级分析，优先解释具体函数、具体调用点、具体参数关系\n"
-                    "- 只要证据里出现危险函数/危险导入，必须分析调用链，并结合函数名 + 函数地址 + 调用点地址来写\n"
-                    "- 只要证据里出现 gdb / 原生运行结果，就必须把动态调试结论写进 exploit stage 判断\n"
-                    "- 若证据里已有 exploit_script / poc，必须明确写“已产出脚本化 PoC”，不能只写调试命令\n"
-                    "- 在“利用性判断”里，必须单独列出 Attacker Condition（网络位置 / 权限 / 具体触发输入）\n"
-                    "- 在“利用性判断”里，必须单独列出 Server Condition（服务端前提 / 默认配置 / 插件或功能开关 / OS 或环境边界）\n"
-                    "- 在“利用性判断”里，必须单独列出 Security Impact，并按 CIA 分别写机密性 / 完整性 / 可用性；没有直接证据就明确写“未见直接影响”\n"
-                    "- 利用性判断必须显式回答“是否已到 RCE / getshell”，以及当前精确停在哪一级\n"
-                    "- 输出中文，避免套话\n\n"
-                    "四部分格式：\n"
-                    "1. 已验证发现\n"
-                    "2. 关键函数深度分析\n"
-                    "3. 利用性判断（必须按以下小标题依次写：Attacker Condition（攻击者条件） / Server Condition（服务器条件） / Security Impact（安全影响，按 CIA） / Exploit Stage（RCE / getshell 结论））\n"
-                    "4. 值得提升为核心笔记的结论"
+                    "请输出四部分：\n"
+                    "1. 已验证发现（每条引用工具名，如下沉到函数/调用点/参数关系）\n"
+                    "2. 关键函数深度分析（函数名 + 地址 + 调用点 + 危险调用链）\n"
+                    "3. 利用性判断，按小标题依次写：Attacker Condition（网络位置/权限/触发输入） / Server Condition（服务端前提/默认配置/环境边界） / Security Impact（按 CIA，无直接影响写“未见直接影响”） / Exploit Stage（是否到 RCE/getshell，精确停在哪一级）\n"
+                    "4. 值得提升为核心笔记的结论\n"
+                    "要求：failed/unavailable 工具要说明影响；证据不足写“尚未证明”并指出缺什么；已有 exploit_script/poc 要写“已产出脚本化 PoC”。"
                 ),
             },
         ]
@@ -1178,13 +1237,9 @@ class OpenAICompatibleLLMBackend:
             {
                 "role": "system",
                 "content": (
-                    "你是在线二进制漏洞审计平台的子代理，正在进行中途协作。"
-                    "你的输出将被广播到 mailbox，因此必须短、准、可驱动下一轮取证。"
-                    "协作阶段优先复用共享记忆和历史结论，不要重复广播样本基础信息。"
-                    "不要写最终总结，不要写未来路线图。"
-                    "要优先回答三件事：已经确认了什么、还需要谁补哪段证据、当前遇到了什么阻塞。"
-                    "协作消息里也要明确当前 exploit stage 停在哪一级，以及谁能补足逼近 RCE / getshell 的证据。"
-                    "如果已有同伴提问，优先回应能直接回答的部分。"
+                    "你是漏洞审计平台的子代理，正在中途协作。输出将广播到 mailbox，必须短、准、可驱动下一轮取证。"
+                    "不要重复共享记忆里的基础信息，不要写未来路线图；只写已确认的新增事实、需要谁补哪段证据、当前阻塞。"
+                    "明确当前 exploit stage 停在哪一级，以及谁能补足逼近 RCE / getshell 的证据。"
                 ),
             },
             {
@@ -1213,6 +1268,66 @@ class OpenAICompatibleLLMBackend:
             },
         ]
         return await self._complete(messages, selection)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Vendor-agnostic check for transient server/network errors worth retrying.
+
+    Works for any OpenAI-compatible backend: relies on ``status_code`` (set by
+    the OpenAI SDK and most compatible servers) plus message/type keywords.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and status in (408, 409, 425, 429, 500, 502, 503, 504):
+        return True
+    type_name = type(exc).__name__.lower()
+    if "timeout" in type_name or "connection" in type_name:
+        return True
+    message = str(exc).lower()
+    retryable_tokens = (
+        "system is busy",
+        "overloaded",
+        "rate limit",
+        "rate_limit",
+        "service unavailable",
+        "temporarily unavailable",
+        "try again later",
+        "timeout",
+        "timed out",
+        "connection",
+        "bad gateway",
+        "internal server error",
+    )
+    return any(token in message for token in retryable_tokens)
+
+
+async def _retry_transient_call(
+    func: object,
+    settings: Settings,
+    *args: object,
+    **kwargs: object,
+) -> object:
+    """Call an awaitable ``func(*args, **kwargs)`` with exponential backoff on
+    transient errors. Non-transient errors raise immediately.
+
+    Used for connection probes / model listing where there is no kwargs-variant
+    fallback, only same-call retry.
+    """
+    max_retries = max(0, int(getattr(settings, "llm_max_retries", 3) or 0))
+    base_delay = float(getattr(settings, "llm_retry_base_delay_seconds", 0.8) or 0.0)
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await func(*args, **kwargs)  # type: ignore[misc]
+        except Exception as exc:
+            last_error = exc
+            if not _is_transient_error(exc):
+                raise
+            if attempt >= max_retries:
+                break
+            delay = min(8.0, base_delay * (2 ** attempt))
+            await asyncio.sleep(delay)
+    assert last_error is not None
+    raise last_error
 
 
 async def probe_openai_compatible_connection(
@@ -1253,11 +1368,17 @@ async def probe_openai_compatible_connection(
             },
         ):
             try:
-                await client.chat.completions.create(**kwargs)
+                await _retry_transient_call(
+                    client.chat.completions.create,
+                    settings,
+                    **kwargs,
+                )
                 errors.clear()
                 break
             except Exception as exc:
                 errors.append(exc)
+                # Feature-compat (thinking not supported) -> try next kwargs.
+                # Anything else (incl. retried-out 5xx) -> surface immediately.
                 if "thinking" not in str(exc).lower():
                     raise
         if errors:
@@ -1289,7 +1410,7 @@ async def list_openai_compatible_models(
         timeout=30.0,
     )
     try:
-        response = await client.models.list()
+        response = await _retry_transient_call(client.models.list, settings)
         models: list[dict[str, str | None]] = []
         for item in getattr(response, "data", []) or []:
             model_id = getattr(item, "id", None)

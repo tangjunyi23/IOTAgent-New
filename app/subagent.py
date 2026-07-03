@@ -23,7 +23,13 @@ from app.models import (
     SubAgentStatus,
     TokenUsageSnapshot,
 )
-from app.observers import AgentObservationState, ContextWindowObserver, NoteRecallObserver, ToolLoopObserver
+from app.observers import (
+    AgentObservationState,
+    ContextCompressionObserver,
+    ContextWindowObserver,
+    NoteRecallObserver,
+    ToolLoopObserver,
+)
 from app.pwn_skill import PwnSkillPack
 from app.target_utils import ensure_target_executable
 from app.toolbox import BinaryToolbox
@@ -37,19 +43,28 @@ class SubAgentWorker:
         self.llm_backend = llm_backend or create_llm_backend(settings)
         self.pwn_skill = PwnSkillPack(settings)
         self.toolbox = BinaryToolbox(settings)
-        self.event_bus = EventBus(
-            observers=[
-                ToolLoopObserver(settings.loop_threshold),
-                NoteRecallObserver(settings.note_recall_threshold),
-                ContextWindowObserver(settings.round_reset_threshold),
-            ]
-        )
+        observers: list = [
+            ToolLoopObserver(settings.loop_threshold),
+            NoteRecallObserver(settings.note_recall_threshold),
+            ContextWindowObserver(settings.round_reset_threshold),
+        ]
+        # Register the context-compression observer only when a real LLM backend
+        # is available (MissingLLMBackend raises on compress_context and would
+        # never produce useful compression).
+        if "Missing" not in type(self.llm_backend).__name__:
+            observers.append(ContextCompressionObserver(settings, self.llm_backend))
+        self.event_bus = EventBus(observers=observers)
+        # Per-(session, role) persistent conversation state across manager rounds.
+        # Keyed by (session_id, role) — NOT task.id, since each round mints a new
+        # task UUID. Lets round N+1 continue the same LLM conversation as round N
+        # instead of starting fresh (fixes cross-round repetition).
+        self._role_state_cache: dict[tuple[str, str], AgentObservationState] = {}
 
-    async def execute(
-        self,
-        payload: SubAgentPayload,
-        event_sink: EventSink | None = None,
-    ) -> SubAgentResult:
+    def clear_role_state(self, session_id: str) -> None:
+        for key in [k for k in self._role_state_cache if k[0] == session_id]:
+            self._role_state_cache.pop(key, None)
+
+    def _build_fresh_state(self, payload: SubAgentPayload) -> AgentObservationState:
         seeded_notes = {
             note.id: note.model_copy(deep=True)
             for note in payload.core_notes
@@ -91,6 +106,63 @@ class SubAgentWorker:
                 is_core=True,
             )
         state.reset_context()
+        return state
+
+    def _refresh_state_for_continuation(
+        self,
+        state: AgentObservationState,
+        payload: SubAgentPayload,
+    ) -> None:
+        """Merge a new round's notes/brief into an existing persistent state
+        without wiping message history. Notes are idempotent by id."""
+        for note in payload.core_notes:
+            state.notes[note.id] = note.model_copy(deep=True)
+        for memory in payload.shared_memory:
+            note_id = f"memory:{memory.id}"
+            state.notes[note_id] = NoteEntry(
+                id=note_id,
+                content=memory.content,
+                source=f"shared-memory:{memory.category}",
+                is_core=True,
+            )
+        for index, brief in enumerate(payload.task.continuation_brief):
+            note_id = f"continuation:{payload.task.id}:{index}"
+            state.notes[note_id] = NoteEntry(
+                id=note_id,
+                content=brief,
+                source="manager:continuation",
+                is_core=True,
+            )
+        # New task UUID each round; update agent_id so tool evidence is tagged correctly.
+        state.agent_id = payload.task.id
+        # Cap retained messages to bound memory (keep most recent ~2 rounds).
+        if len(state.messages) > 80:
+            state.messages = state.messages[-80:]
+        # Mark the round boundary so the LLM knows it's a continuation, not a reset.
+        state.messages.append(
+            {
+                "role": "system",
+                "content": (
+                    f"Manager 第 {payload.task.round_index} 轮继续；基于上文已验证证据推进，"
+                    "不要重复已完成的基础工具，不要重复已广播过的事实。"
+                ),
+            }
+        )
+
+    async def execute(
+        self,
+        payload: SubAgentPayload,
+        event_sink: EventSink | None = None,
+    ) -> SubAgentResult:
+        cache_key = (payload.session_id, payload.task.role)
+        state: AgentObservationState | None = None
+        if payload.continue_role_session:
+            state = self._role_state_cache.get(cache_key)
+        if state is None:
+            state = self._build_fresh_state(payload)
+            self._role_state_cache[cache_key] = state
+        else:
+            self._refresh_state_for_continuation(state, payload)
         mailbox = AgentMailbox(payload.coordination_dir) if payload.coordination_dir else None
         seen_message_ids: set[str] = set()
         plan_selection = self._selection_for_task_phase(payload.task, phase="plan")
@@ -686,19 +758,12 @@ class SubAgentWorker:
         available_tools_text = ", ".join(item for item in (available_tool_ids or []) if item) or "无"
         reused_tools_text = ", ".join(item for item in (reused_tool_ids or []) if item) or "无"
         return (
-            f"你是二进制漏洞审计平台中的 `{role}` 子代理。"
-            f"你的目标是：{objective}。"
-            "你必须输出面向漏洞审计的结论，不得空转或重复相同命令。"
-            "你与其他子代理共享会话级协作信箱和共享记忆，可以读取同伴阶段性结论，但必须保留自己的独立判断。"
-            "每一轮都必须显式继承上一轮已完成的工具结果、共享记忆和已证明 exploit stage，禁止把本轮当作从零开始。"
-            "若共享记忆、已复用证据或历史结论已经覆盖基础事实，就不要重复分析同一批基础工具结果。"
-            "当前可用工具只限于这份清单，不得规划或依赖清单外工具："
-            f"{available_tools_text}。"
-            "如果某个工具不可用，就必须明确改走旁路证据路径，而不是反复请求同一 unavailable 工具。"
-            f"本轮已复用的历史工具结果：{reused_tools_text}。"
-            "若已有崩溃证据，不要把再次验证崩溃当作终点；必须优先寻找泄露、栈覆盖、canary 命中、RIP 控制、RCE、getshell 或 flag 的推进证据。"
-            "若 canary / PIE / Full RELRO 阻断最终利用，也必须明确当前最接近的已验证边界，以及继续推进所需的最小证据。"
-            "遇到阻塞时要主动提问；收到同伴问题时，只要你手里有证据就要尽快回应。"
+            f"你是漏洞审计平台中的 `{role}` 子代理。目标：{objective}。"
+            "每轮显式继承上一轮已完成工具结果、共享记忆和已证明 exploit stage，不把本轮当从零开始；已覆盖的基础事实不重复分析。"
+            f"当前可用工具仅限：{available_tools_text}；不可用工具改走旁路证据，不反复请求同一 unavailable 工具。"
+            f"本轮已复用历史工具：{reused_tools_text}。"
+            "已有崩溃证据时不要把再次验证崩溃当终点，必须推进到 信息泄露 / 栈覆盖 / canary 命中 / RIP 可控 / RCE / getshell / flag 的某一级；canary/PIE/Full RELRO 阻断时写清当前边界与缺步。"
+            "若上下文已有某条事实，不在协作消息里重复广播，只广播本轮新增证据或阻塞。"
             + (f"跨轮延续约束：{continuation_text}。" if continuation_text else "")
         )
 
@@ -1211,7 +1276,11 @@ class InProcessSubAgentRuntime:
     ) -> SubAgentResult:
         return await self.worker.execute(payload, event_sink=event_sink)
 
+    def clear_role_states(self, session_id: str) -> None:
+        self.worker.clear_role_state(session_id)
+
     async def cleanup_session(self, session_id: str) -> None:
+        self.clear_role_states(session_id)
         shutil.rmtree(self.settings.runtime_dir / session_id, ignore_errors=True)
 
 
@@ -1459,7 +1528,14 @@ class DockerSubAgentRuntime:
             chunk = handle.read()
             return chunk, handle.tell()
 
+    def clear_role_states(self, session_id: str) -> None:
+        # Docker runtime does not persist in-process conversation state; each
+        # subagent runs in a fresh container. File-based role-state persistence
+        # is deferred to Phase D. No-op here so the Manager can call uniformly.
+        return None
+
     async def cleanup_session(self, session_id: str) -> None:
+        self.clear_role_states(session_id)
         session_dir = self.settings.runtime_dir / session_id
         for cidfile_path in session_dir.glob("**/container.cid"):
             await self._stop_container_by_cidfile(cidfile_path)

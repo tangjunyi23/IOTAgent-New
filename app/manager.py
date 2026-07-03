@@ -164,6 +164,14 @@ class ManagerAgentService:
         "未满足",
         "未在本轮",
     )
+    _BOUNDARY_PRESERVE_TOKENS: tuple[str, ...] = (
+        "当前边界",
+        "已确认边界",
+        "exploit stage",
+        "缺口",
+        "最接近",
+        "distance to",
+    )
 
     def __init__(
         self,
@@ -688,11 +696,11 @@ class ManagerAgentService:
             for entry in self._select_shared_memory_for_manager(session, limit=6)
         )
         if round_index <= 1:
-            notes.append("规划约束：首轮优先选择最少但互补的角色组合，不要预留重复基础工具。")
+            notes.append("规划约束：首轮选最少互补角色，不重跑基础工具。")
             return self._dedupe_text_items(notes, limit=14)
 
-        notes.append(f"当前进入 Manager 第 {round_index} 轮规划，必须基于共享记忆与前序已完成证据继续推进。")
-        notes.append("规划约束：下一轮只能补未覆盖的证据缺口，优先复用上一轮已完成工具结果，禁止重复基础工具链。")
+        notes.append(f"当前进入 Manager 第 {round_index} 轮规划，基于共享记忆与前序已完成证据继续推进。")
+        notes.append("规划约束：只补未覆盖的证据缺口，复用已完成工具，禁止重跑基础工具链。")
         notes.extend(self._build_prior_role_digests(session, before_round=round_index, limit=4))
 
         manager_highlights = self._collect_manager_highlights(session)
@@ -923,6 +931,21 @@ class ManagerAgentService:
             ),
         )
 
+    def _session_completed_tool_ids(self, session: AuditSession, through_round: int) -> set[str]:
+        """tool_ids that have ANY completed evidence across all rounds <= through_round.
+
+        A capability that already succeeded somewhere in the session is not a
+        real blocker even if a later attempt failed (e.g. intermittent rc=1
+        that the subagent self-retried to completion).
+        """
+        return {
+            evidence.command_id
+            for task in session.subagents
+            if (task.round_index or 0) <= through_round
+            for evidence in task.evidence
+            if evidence.status == "completed"
+        }
+
     def _should_continue_manager_rounds(
         self,
         session: AuditSession,
@@ -940,6 +963,7 @@ class ManagerAgentService:
         if not has_completed:
             return False, ""
 
+        session_completed = self._session_completed_tool_ids(session, round_index)
         latest_round_completed_tool_ids = {
             evidence.command_id
             for task in latest_round_tasks
@@ -952,8 +976,14 @@ class ManagerAgentService:
             for evidence in task.evidence[-6:]
             if evidence.status in {"failed", "timeout", "unavailable"}
         ]
-        if not latest_round_completed_tool_ids and latest_round_blockers:
-            return False, f"本轮仅得到工具阻塞且没有新增有效证据：{'；'.join(latest_round_blockers[:2])}。"
+        # True blockers = failed this round AND never completed anywhere in the
+        # session. A self-retried tool (failed then completed) is NOT a blocker.
+        latest_round_true_blockers = [
+            item for item in latest_round_blockers
+            if item.split("=", 1)[0].split(":")[-1] not in session_completed
+        ]
+        if not latest_round_completed_tool_ids and latest_round_true_blockers:
+            return False, f"本轮仅得到工具阻塞且没有新增有效证据：{'；'.join(latest_round_true_blockers[:2])}。"
 
         manager_pending = [
             f"{task.role}({task.manager_step_completed}/{max(1, task.manager_step_total)})"
@@ -964,17 +994,10 @@ class ManagerAgentService:
             return True, f"Manager 复核后仍有角色未完成计划检查点：{'；'.join(manager_pending[:2])}。"
 
         blockers = [
-            f"{task.role}:{evidence.command_id}={evidence.status}"
-            for task in latest_round_tasks
-            for evidence in task.evidence[-6:]
-            if evidence.status in {"failed", "timeout", "unavailable"}
+            item for item in latest_round_blockers
+            if item.split("=", 1)[0].split(":")[-1] not in session_completed
         ]
-        completed_tool_ids = {
-            evidence.command_id
-            for task in latest_round_tasks
-            for evidence in task.evidence
-            if evidence.status == "completed"
-        }
+        completed_tool_ids = latest_round_completed_tool_ids | session_completed
         static_candidates = self._collect_static_rce_candidates(session)
         current_highlights = set(self._collect_manager_highlights(session))
         previous_round_tasks = [task for task in session.subagents if task.round_index == round_index - 1]
@@ -1164,6 +1187,13 @@ class ManagerAgentService:
             self._cleanup_finished_uploaded_artifact(failed_session)
         finally:
             self.running_sessions.pop(session_id, None)
+            self.runtime.clear_role_states(session_id)
+
+    def _role_has_history(self, session: AuditSession, role: str, round_index: int) -> bool:
+        return any(
+            task.role == role and (task.round_index or 0) < round_index
+            for task in session.subagents
+        )
 
     async def _run_subagent(self, session: AuditSession, task: SubAgentTask):
         current_session = self.repository.load_session(session.id)
@@ -1218,6 +1248,7 @@ class ManagerAgentService:
             coordination_dir=str(self.settings.runtime_dir / session.id / f"round-{task.round_index}" / "coordination"),
             peer_count=len(round_peers),
             peer_roles=[item.role for item in round_peers],
+            continue_role_session=self._role_has_history(session, task.role, task.round_index),
         )
         result = await self.runtime.run(
             payload,
@@ -1306,6 +1337,18 @@ class ManagerAgentService:
             )
         return plan_summary, plan_outline, tasks
 
+    def _build_getshell_verdict_line(self, reached: bool, missing_step: str | None) -> str | None:
+        if reached:
+            return "利用结论：getshell / RCE 已达成。"
+        if missing_step:
+            step = re.sub(r"\*{2}", "", missing_step).strip()
+            step = re.sub(r"^\d+[\.\、]\s*", "", step)  # drop leading "N." / "N、"
+            step = re.sub(r"^缺步\s*[A-Z0-9]*\s*[—\-:：]*\s*", "", step)
+            step = step.lstrip("：:- ").lstrip("缺口").lstrip("：: ").strip()
+            if step:
+                return f"利用结论：getshell 未达成；缺口：{step}"
+        return "利用结论：getshell 未达成；当前证据未形成可落到 RCE 的动态链。"
+
     def _compose_final_report(self, session: AuditSession) -> str:
         lines = [
             f"# {self._report_title(session)}",
@@ -1316,6 +1359,18 @@ class ManagerAgentService:
         function_sections = self._build_function_report_sections(session, manager_highlights)
         call_chain_sections = self._build_dangerous_call_chain_sections(session, manager_highlights)
         poc_sections = self._build_verified_poc_sections(session)
+
+        # Lead 关键结论 with an explicit getshell verdict so the user immediately
+        # sees whether the shell was reached and, if not, the one missing step.
+        boundary, missing_step = self._collect_exploit_boundary_from_summaries(session)
+        rce_head = (rce_sections[0] if rce_sections else "")
+        # Reached only when the RCE head explicitly says getshell/code-exec was
+        # achieved — NOT merely when "未验证到" is absent (an info-leak stage
+        # line like "已验证信息泄露，未到 RCE / getshell" must count as NOT reached).
+        reached = bool(rce_sections) and "getshell" in rce_head and "未到" not in rce_head and "未验证" not in rce_head
+        getshell_line = self._build_getshell_verdict_line(reached, missing_step)
+        if getshell_line:
+            manager_highlights = [getshell_line, *manager_highlights]
 
         if manager_highlights:
             lines.extend(
@@ -2183,6 +2238,20 @@ class ManagerAgentService:
                     return manager_highlights
         return manager_highlights
 
+    _CRT_NOISE_NAMES: tuple[str, ...] = (
+        "__do_global_dtors_aux",
+        "__libc_csu_init",
+        "__libc_csu_fini",
+        ".rand",
+        ".setvbuf",
+        ".init",
+        ".fini",
+        "_start",
+        "frame_dummy",
+        "register_tm_clones",
+        "deregister_tm_clones",
+    )
+
     def _build_function_report_sections(
         self,
         session: AuditSession,
@@ -2208,6 +2277,14 @@ class ManagerAgentService:
                     self._ingest_gdb_poc(entries, task.role, payload)
 
         self._apply_manager_highlight_overrides(entries, manager_highlights)
+        # Drop CRT noise and functions with no vuln signal — only keep entries
+        # that have an issue line or a dangerous call ref.
+        entries = {
+            key: entry
+            for key, entry in entries.items()
+            if entry.name not in self._CRT_NOISE_NAMES
+            and (entry.issue_lines or entry.dangerous_call_refs)
+        }
         ranked = sorted(
             entries.values(),
             key=lambda item: (
@@ -2274,6 +2351,87 @@ class ManagerAgentService:
                     return rendered
         return rendered
 
+    _EXPLOIT_BOUNDARY_KEYWORDS: tuple[str, ...] = (
+        "secure@",
+        "system@plt",
+        "ret2win",
+        "ret2system",
+        "ret2libc",
+        "后门",
+        "backdoor",
+        "信息泄露",
+        "栈覆盖",
+        "rip可控",
+        "rip 可控",
+        "rce",
+        "getshell",
+        "get shell",
+    )
+    _MISSING_STEP_KEYWORDS: tuple[str, ...] = (
+        "缺",
+        "未验证",
+        "未动态验证",
+        "未确认",
+        "需要 gdb",
+        "需 gdb",
+        "需要 cyclic",
+        "需 cyclic",
+        "偏移未",
+        "未跑",
+    )
+
+    def _is_substantive_line(self, line: str) -> bool:
+        """True for a line with real content, not a bare heading/title."""
+        s = line.strip().lstrip("#").lstrip("*-").strip()
+        s = re.sub(r"\*{2}", "", s).strip()  # drop **...** markdown bold markers
+        if len(s) < 12:
+            return False
+        # A heading like "卡在的边界与缺步：" ends with a colon and is short — skip.
+        if s.endswith(":") or s.endswith("："):
+            if len(s) < 30:
+                return False
+        return True
+
+    def _collect_exploit_boundary_from_summaries(
+        self,
+        session: AuditSession,
+    ) -> tuple[str | None, str | None]:
+        """Extract (boundary_line, missing_step_line) from ALL subagent summaries
+        and promoted notes — not just gdb_poc evidence. Surfaces the exploit-strategy
+        findings (e.g. ret2win backdoor, system@plt) that never reached the report
+        when no dynamic PoC ran. Reads raw output_summary (pre-sanitize) so boundary
+        tokens are visible.
+        """
+        boundary: str | None = None
+        missing_step: str | None = None
+        for task in session.subagents:
+            texts: list[str] = []
+            if task.output_summary:
+                texts.append(task.output_summary)
+            for note in task.promoted_notes or []:
+                if note:
+                    texts.append(note)
+            for text in texts:
+                if boundary is None and any(kw in text.lower() for kw in self._EXPLOIT_BOUNDARY_KEYWORDS):
+                    for line in text.splitlines():
+                        if not self._is_substantive_line(line):
+                            continue
+                        line_stripped = line.strip().lstrip("#").lstrip("*-").strip()
+                        if any(kw in line_stripped.lower() for kw in self._EXPLOIT_BOUNDARY_KEYWORDS):
+                            boundary = self._compact_fact_text(line_stripped)
+                            break
+                if missing_step is None and any(kw in text for kw in self._MISSING_STEP_KEYWORDS):
+                    for line in text.splitlines():
+                        if not self._is_substantive_line(line):
+                            continue
+                        line_stripped = line.strip().lstrip("#").lstrip("*-").strip()
+                        if any(kw in line_stripped for kw in self._MISSING_STEP_KEYWORDS):
+                            missing_step = self._compact_fact_text(line_stripped)
+                            break
+                if boundary and missing_step:
+                    break
+        return boundary, missing_step
+
     def _build_rce_assessment_section(self, session: AuditSession) -> list[str]:
         payloads = self._collect_rce_payloads(session)
         if payloads:
@@ -2325,11 +2483,26 @@ class ManagerAgentService:
         static_candidates = self._collect_static_rce_candidates(session)
         if static_candidates:
             joined = "；".join(static_candidates[:3])
-            return [
+            boundary, missing_step = self._collect_exploit_boundary_from_summaries(session)
+            lines = [
                 "- 全局分级: 未验证到 RCE / getshell",
                 f"- 当前已确认: {joined}",
                 "- 动态边界: 本轮没有 GDB PoC 把原语推进到命令执行或 shell 交互。",
             ]
+            if boundary:
+                lines.append(f"- 已确认边界: {boundary}")
+            if missing_step:
+                lines.append(f"- 缺口: {missing_step}")
+            return lines
+
+        boundary, missing_step = self._collect_exploit_boundary_from_summaries(session)
+        if boundary or missing_step:
+            lines = ["- 全局分级: 未验证到 RCE / getshell"]
+            if boundary:
+                lines.append(f"- 已确认边界: {boundary}")
+            if missing_step:
+                lines.append(f"- 缺口: {missing_step}")
+            return lines
 
         return [
             "- 全局分级: 未验证到 RCE / getshell",
@@ -3432,6 +3605,8 @@ class ManagerAgentService:
 
     def _is_incomplete_report_line(self, text: str) -> bool:
         normalized = text.strip()
+        if any(token in normalized for token in self._BOUNDARY_PRESERVE_TOKENS):
+            return False
         if any(token in normalized for token in self.INCOMPLETE_TOKENS):
             return True
         if normalized.startswith(("若", "如果", "否则若", "如若")):
@@ -3533,6 +3708,9 @@ class ManagerAgentService:
             if not line:
                 if sanitized_lines and sanitized_lines[-1] != "":
                     sanitized_lines.append("")
+                continue
+            if any(token in normalized for token in self._BOUNDARY_PRESERVE_TOKENS):
+                sanitized_lines.append(raw_line)
                 continue
             if any(token in normalized for token in blocked_tokens) or self._is_incomplete_report_line(normalized):
                 continue
