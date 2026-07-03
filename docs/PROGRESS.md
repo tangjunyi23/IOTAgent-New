@@ -1,5 +1,113 @@
 # 项目开发进度
 
+## 2026-07-03
+
+### 增量进展（LLM 提供商泛化为 OpenAI 兼容 / rootfs_elf 导出器替换 / Manager 与 GDB 强化）
+
+本轮把“DeepSeek 专用”这条贯穿配置、后端、路由、前端的链路泛化为“OpenAI 兼容”，并把 CTF-pwn 技能包的 IDA 导出器换成 vendored `rootfs_elf` 包，同时继续强化 Manager 续轮收敛与 GDB 溢出探测。三块改动运行时耦合较紧（`available_tools` 参数同时服务于 LLM 泛化与提示词推进；`toolbox.py` 同文件内含导出器选择与 GDB 探测两个主题），因此合并为单次 feat 提交 `2761cd5` 落地，并已推送至 `origin/main`。
+
+#### LLM 提供商泛化（DeepSeek → OpenAI 兼容）
+
+- 配置层：
+  - `app/config.py` 把 `deepseek_api_key` / `deepseek_base_url` 重命名为 `llm_api_key` / `llm_base_url`，并保留向后兼容的 property（旧代码读 `settings.deepseek_api_key` 仍可用）
+  - 新增 `migrate_legacy_llm_env`（`@model_validator(mode="before")`）把旧 `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` 环境变量自动迁移到新 `llm_*` 键
+  - `manager_regular_model` / `manager_hard_model` 默认值从写死的 `deepseek-v4-flash` / `deepseek-v4-pro` 改为 `None`，由用户自行填写模型名
+  - `pwn_skill_zip_path` 不存在时回退到 `~/pwnskill.zip` 或 `~/ctf-pwn-skill-with-kb-2026-04-30.zip`
+- 后端 LLM：
+  - `DeepSeekLLMBackend` → `OpenAICompatibleLLMBackend`、`MissingDeepSeekLLMBackend` → `MissingLLMBackend`（模块底部保留旧别名，旧 import 不破）
+  - 客户端改用 `settings.llm_api_key` / `settings.llm_base_url` 构造
+  - `_complete` 改为按候选 kwarg 变体逐个尝试（`reasoning_effort+thinking` → `reasoning_effort` → `thinking` → 纯净），通过新 `_is_feature_compatibility_error` 吞掉 `reasoning_effort` / `thinking` / `unsupported` / `unknown parameter` 等特性兼容错误，非兼容错误立即上抛
+  - 新增 `list_openai_compatible_models()` 调用 `client.models.list()` 返回模型清单
+  - `probe_deepseek_connection` → `probe_openai_compatible_connection`，接受显式 `base_url` / `model`，先试 thinking-disabled 再试纯净 ping，并正确 `await` 异步 `client.close()`
+- 数据模型（`app/models.py`）：
+  - `DeepSeekSettingsView/Update/CheckRequest/CheckResult` → `LLMProvider*` 系列视图
+  - 新增 `LLMModelInfo` / `LLMProviderModelsResult`（模型列表端点用）
+  - 新增 `ToolHealthCheckResult`（工具健康检查用）
+  - `AuditRequest` / `AuditReportExport` 新增 `desired_outcome` / `audit_mode`
+  - `SubAgentPayload` 新增 `available_tool_ids`
+  - `SystemSettingsView` 新增 `llm_provider` / `llm_configured` / `llm_key_preview` / `llm_status` / `llm_base_url` / `manager_regular_model` / `manager_hard_model`，旧 `deepseek_*` 字段保留为 `| None` 兼容
+  - `ModelSelection.model` 类型放宽为 `str | None`（模型可选后允许空选择）
+- 路由（`app/routes.py`）：
+  - `GET/PUT /settings/deepseek` → `/settings/llm`（保留旧路径作别名）
+  - `POST /settings/deepseek/check` → `/settings/llm/check`（保留别名）
+  - 新增 `POST /settings/llm/models` 返回 `LLMProviderModelsResult`
+  - 新增 `POST /tool-health-check` 返回 `list[ToolHealthCheckResult]`
+- Manager（`app/manager.py`）：
+  - `deepseek_settings_view` → `llm_settings_view`、`update_deepseek_api_key` → `update_llm_settings(api_key, base_url)`、`check_deepseek_api` → `check_llm_api(api_key, base_url, model)`
+  - 新增 `list_llm_models()` / `run_tool_health_checks()`
+  - 运行时状态新增 `missing_regular_model` / `missing_hard_model` 守卫与 `_provider_label()`（base_url 含 deepseek 返回 `deepseek`，否则 `openai-compatible`）
+  - `runtime_profile` 聚合最近 20 场会话的 token 用量，上报 `cached_tokens` 与 `cache_hit_ratio`
+  - `build_report_export` 纳入 `desired_outcome` / `audit_mode`
+  - 持久化 `llm_*` 时同步镜像到旧 `DEEPSEEK_*` 环境变量，热更新不丢旧调用方
+- 子代理（`app/subagent.py`）：
+  - Docker 容器环境变量改为 `LLM_API_KEY` / `LLM_BASE_URL`，同时保留旧 `DEEPSEEK_*` 镜像
+  - `_docker_network_mode` 自动选择改以 `settings.llm_api_key` 为依据
+- 前端：
+  - `frontend/index.html` 表单 `deepseek-settings-form` → `llm-settings-form`，标签改 “OpenAI-Compatible API Key”，新增 Base URL 字段、`获取模型列表` / `检测工具环境` 按钮与对应状态容器
+  - 系统设置模态框 “DeepSeek 模型” → “OpenAI-Compatible 模型”，`deepseek_base_url` → `llm_base_url`，模型名占位符改为 “用户自行填写模型名”
+  - 新增任务表单字段 `#task-desired-outcome`（六级成果目标）与 `#task-audit-mode`
+  - `app.js` 全面改名 `deepseekSettings` → `llmSettings`、`loadDeepSeekSettings` → `loadLlmSettings`；新增模型列表卡片（带“填入常规模型 / 填入高难模型”按钮）、工具健康检查卡片、子代理归档面板；视图切换用 `Symbol` token 防止 stale 回调污染 DOM，`setTimeout(…,30)` 改为 `requestAnimationFrame`
+  - `styles.css` 补 `scrollbar-gutter: stable` 与 `.main-shell` / `.view` 的 `width: 100%`
+  - 静态资源版本号刷新为 `?v=20260526e`
+
+#### CTF-pwn 技能：换用 vendored `rootfs_elf` 导出器
+
+- 新增 vendored `data/skills/ctf-pwn/scripts/rootfs_elf/` 包（11 个文件）：
+  - `ida_worker.py`（单 ELF 导出，`rootfs_elf_single.py` 的目标）
+  - `analyzer.py` / `cli.py`（批量，`rootfs_elf_batch.py` 的目标）
+  - `scanner.py`（rootfs 树扫描与 ELF 分类）、`checksec.py`、`config.py`（`ensure_ida_env` / IDA 路径解析）、`utils.py`、`model_types.py`、`__init__.py` / `__main__.py`
+  - 产物布局：`source.c` / `function_index.jsonl` / `decompile/*.c` / `strings.txt` / `imports.txt` / `exports.txt` / `data_symbols.txt` / 可选 `memory/`；批量另增 `summary.json` / `indexes/*` / `by_elf/<elf_id>/...`
+- 新增两个 shim：`rootfs_elf_single.py` / `rootfs_elf_batch.py`
+- 删除旧 `scripts/export_headless_pseudocode.py`（244 行，被新包取代）
+- `SKILL.md` 与 `references/headless_ida_export.md` 整体重写：
+  - 偏好反编译路径改为 vendored `rootfs_elf_single.py` / `rootfs_elf_batch.py`
+  - Ghidra 从“禁止”改为“IDA+调试器工作流失败后的最后兜底”
+  - 新增 IDA 自发现规则（`IDADIR` → `~/ida-pro-*` → `/opt/idapro*` → `--ida-dir`）
+- `.source.json` 把 `zip_path` 指向 `~/pwnskill.zip`，更新 `size` / `mtime_ns`
+- `app/pwn_skill.py` 新增 `rootfs_elf_single_script_path()` / `rootfs_elf_batch_script_path()` / `ida_reference_excerpt()` / `methodology_excerpt()`
+- `app/toolbox.py` 的 `_run_ida_batch` 按导出器脚本名分支：`rootfs_elf_single.py` 不传 `--skip-memory` / `--no-decompile-funcs` / `--log-path`；`_resolve_rootfs_elf_exporter_script` 优先选 `rootfs_elf_single.py`，其次 `ida_worker.py`
+- 新增 4 份 methodology 写作：`attachment_30`（有符号索引越界 + ret2libc）、`borrowstack`（i386 栈溢出 + 连续 GOT 泄露）、`ring_factory`（5 字节 `%7$p` canary 泄露 + UAF + 栈破坏 ret2libc）、`deepvoid`（堆溢出 unsafe-unlink → `strtol@got`→`system`），并补 `methodologies/index.md` 表格与 `patterns.md` 一条 i386 连续 GOT 指纹经验
+- `references/methodology_generation.md` 模板把 “ida-no-mcp Pseudocode” 改为 “IDA Pseudocode”
+
+#### Manager / GDB 强化与测试
+
+- 工具可用性门控（`app/toolbox.py`）：
+  - 新增 `available_tool_ids()`（同时 `available` 且 `enabled`）与 `run_health_checks()`
+  - `plan_follow_up` 与角色流水线在 `is_tool_enabled` 之外，再校验 `_build_capability(tool_id).available`，才调度 `function_disasm` / `gdb_poc` / `function_xrefs`
+  - 新增 `_check_capability_health()` / `_tool_probe_commands()`：python/ida 模式直接判 ok，可执行模式用 `--version` / `-v` / `-V` / `--help` 探测，`asyncio.to_thread` 执行并带超时
+  - `ROLE_PIPELINES` 给每个角色补 `function_disasm`
+- GDB 溢出探测大幅扩展（`_run_gdb_overflow_probe` / `_parse_gdb_overflow_output`）：
+  - 新增 `breakpoint pending on` / `print thread-events off` / `handle SIGPIPE`，捕获 pre/post-call 寄存器、frame（`x/24gx $rbp-0x80`）与 buffer（`x/64bx` / `x/96bx`）转储，`ni` 单步过调用，再 `continue` 到信号
+  - 新增 `_overflow_probe_registers(call_target)` 把 read/fgets/gets/recv/recvfrom 映射到 (buffer_reg, length_reg)
+  - 输出按段落标记解析：`===PRECALL===` / `===FRAME_PRE===` / `===BUF_PRE===` / `===CALL_STEP===` / `===POSTCALL===` / `===FRAME_POST===` / `===BUF_POST===` / `===CONTINUE===` / `===POSTSIGNAL===`
+  - 阶段分类新增 `canary-overwrite`（`stack smashing detected` / `__stack_chk_fail`），`stack-overwrite` 同时参考 `post_frame_offsets` / `buffer_offsets`
+  - `_build_overflow_verdict` / `_build_gdb_poc_script` 同步 canary 分支
+  - 新增 `_collect_pattern_offsets(pattern, lines)` 去重提取所有 cyclic-pattern 偏移
+- Manager 续轮收敛（`app/manager.py`）：
+  - `_should_expand_round` / `_decide_round_expansion` 新增硬上限轮次 3、仅阻塞且无新增完成工具时早退、round≥2 时无新增完成工具与无新增 highlights 即停
+  - `_build_subagent_core_notes` 从 6 条扩到最多 12 条，追加 manager highlights（top 4）与 RCE 评估边界行（top 3）
+  - 新增 `_extract_task_stage_boundary(task)` 扫描输出/笔记中的 getshell/RCE/RIP-control/stack-overwrite/info-leak/crash 行，连同跨角色阶段进度一起塞进 continuation brief
+  - `_collect_manager_highlights` 在 `promoted_notes` 为空时回退到 `_extract_summary_key_points(task.output_summary)`
+  - RCE 评估新增 `canary-overwrite` / `stack-overwrite` 阶段，渲染证据补 `probe_buffer_line` 与 canary/smash 注记
+  - 报告移除“子代理归档”段落
+- 提示词推进（`app/llm.py` / `app/subagent.py` / `app/pwn_skill.py`）：
+  - LLM 协议所有方法新增 `available_tools` kwarg；`_tool_hint_for_role` 把角色提示工具与“可用且启用”的工具取交集
+  - 提示词明确要求：已有崩溃证据时不得把“再次验证崩溃”当终点，必须推进到 leak / 栈覆盖 / canary 命中 / RIP 可控 / RCE / getshell；canary/PIE/Full RELRO 阻断时也要写清当前最接近的可证明阶段
+  - 禁止规划“可用”以外的工具；基础工具已跑则默认禁止重规划，除非写明补的是哪个新缺口
+  - `pwn_skill.py` 角色笔记补 IDA 优先 `rootfs_elf_single.py` 与 `methodology_excerpt` 摘要
+
+### 当前验证
+
+- `./.venv/bin/python -m pytest tests/ -q` 通过，结果：`66 passed in 35.25s`
+- 已单次 feat 提交 `2761cd5`（41 文件，+3935/-557），含新增 `scripts/rootfs_elf/` 包、4 份 methodology、删除旧 `export_headless_pseudocode.py`
+- 已 `git push origin main`，推送 `07973d7..2761cd5`，本地 `main` 与 `origin/main` ahead/behind = `0 0`，工作区干净
+
+### 当前风险与遗留
+
+- `rootfs_elf_batch.py` / `rootfs_elf_single.py` 依赖 `scripts/` 在 `sys.path` 上（`from rootfs_elf... import`），容器内调用需确认 `scripts/` 已挂载或加入路径
+- 新的 `/settings/llm/*` 与旧 `/settings/deepseek/*` 别名并存，前端已切到新路径；若后续要彻底去 DeepSeek 命名，需同步移除别名与 `SystemSettingsView` 里的 `deepseek_*` 兼容字段
+- thinking 参数降级靠错误关键字匹配（`unsupported` / `unknown parameter` / `invalid_request_error` 等），不同 OpenAI 兼容服务端的错误文案若不一致，可能误判为非兼容错误而上抛
+
 ## 2026-05-08
 
 ### 增量进展（Manager 续轮纠偏 / 前端静态版本刷新 / 实机可访问性复核）
