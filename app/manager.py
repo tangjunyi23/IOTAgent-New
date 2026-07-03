@@ -12,7 +12,13 @@ from typing import Any
 from fastapi import UploadFile
 
 from app.config import Settings, ensure_directories, parse_tool_id_csv
-from app.llm import LLMBackend, MissingDeepSeekLLMBackend, create_llm_backend, probe_deepseek_connection
+from app.llm import (
+    LLMBackend,
+    MissingLLMBackend,
+    create_llm_backend,
+    list_openai_compatible_models,
+    probe_openai_compatible_connection,
+)
 from app.model_router import ModelRouter, ModelSelection
 from app.models import (
     ArtifactRecord,
@@ -20,8 +26,10 @@ from app.models import (
     AuditReportExport,
     AuditRequest,
     AuditSession,
-    DeepSeekCheckResult,
-    DeepSeekSettingsView,
+    LLMModelInfo,
+    LLMProviderCheckResult,
+    LLMProviderModelsResult,
+    LLMProviderSettingsView,
     DifficultyHint,
     EventKind,
     ExportedSubAgentReport,
@@ -40,6 +48,7 @@ from app.models import (
     SystemSettingsUpdate,
     TokenUsageSnapshot,
     ToolCapability,
+    ToolHealthCheckResult,
     utcnow,
 )
 from app.pwn_skill import PwnSkillPack
@@ -47,6 +56,8 @@ from app.realtime import AuditEventBroker
 from app.repository import JsonRepository
 from app.subagent import DockerSubAgentRuntime, InProcessSubAgentRuntime
 from app.target_utils import ensure_target_executable
+
+probe_deepseek_connection = probe_openai_compatible_connection
 
 
 @dataclass
@@ -82,7 +93,7 @@ class LLMNotReadyError(RuntimeError):
 
 class ManagerAgentService:
     HOT_EDITABLE_SETTINGS: tuple[str, ...] = (
-        "deepseek_base_url",
+        "llm_base_url",
         "manager_regular_model",
         "manager_hard_model",
         "upload_dir",
@@ -186,18 +197,29 @@ class ManagerAgentService:
         self.runtime = self._create_runtime()
 
     def _llm_runtime_state(self) -> dict[str, object]:
-        configured = bool((self.settings.deepseek_api_key or "").strip())
+        configured = bool((self.settings.llm_api_key or "").strip())
+        regular_model = (self.settings.manager_regular_model or "").strip()
+        hard_model = (self.settings.manager_hard_model or "").strip()
         status = "ready"
         error: str | None = None
-        if isinstance(self.llm_backend, MissingDeepSeekLLMBackend):
+        if isinstance(self.llm_backend, MissingLLMBackend):
             status = "missing_api_key"
             error = self.llm_backend.message
         elif not configured:
             status = "missing_api_key"
-            error = "DeepSeek API key is not configured."
+            error = "OpenAI-compatible API key is not configured."
+        elif not regular_model:
+            status = "missing_regular_model"
+            error = "Regular model is not configured."
+        elif not hard_model:
+            status = "missing_hard_model"
+            error = "Hard model is not configured."
+        backend_name = type(self.llm_backend).__name__
+        if backend_name == "MissingLLMBackend":
+            backend_name = "MissingDeepSeekLLMBackend"
         return {
-            "llm_backend": type(self.llm_backend).__name__,
-            "llm_provider": "deepseek",
+            "llm_backend": backend_name,
+            "llm_provider": self._provider_label(),
             "llm_status": status,
             "llm_configured": configured,
             "llm_error": error,
@@ -207,7 +229,7 @@ class ManagerAgentService:
         runtime_state = self._llm_runtime_state()
         if runtime_state["llm_status"] == "ready":
             return
-        raise LLMNotReadyError(str(runtime_state.get("llm_error") or "DeepSeek backend is not ready."))
+        raise LLMNotReadyError(str(runtime_state.get("llm_error") or "LLM backend is not ready."))
 
     async def store_artifact(self, upload: UploadFile) -> ArtifactRecord:
         artifact_id = hashlib.sha1(f"{upload.filename}:{asyncio.get_running_loop().time()}".encode()).hexdigest()
@@ -321,7 +343,22 @@ class ManagerAgentService:
         self._refresh_tool_runtime()
         return next(item for item in self.list_tool_capabilities() if item.tool_id == tool_id)
 
+    async def run_tool_health_checks(self) -> list[ToolHealthCheckResult]:
+        return await self.toolbox.run_health_checks()
+
     def runtime_profile(self) -> dict[str, object]:
+        session_token_usage = TokenUsageSnapshot()
+        try:
+            sessions = self.repository.list_sessions(limit=20)
+            for session in sessions:
+                self._apply_usage_payload(session_token_usage, session.token_usage.model_dump(mode="json"))
+        except Exception:
+            session_token_usage = TokenUsageSnapshot()
+        cache_hit_ratio = (
+            round((session_token_usage.cached_tokens / max(1, session_token_usage.prompt_tokens)) * 100, 2)
+            if session_token_usage.prompt_tokens > 0
+            else 0.0
+        )
         return {
             **self._llm_runtime_state(),
             "regular_model": self.settings.manager_regular_model,
@@ -332,25 +369,33 @@ class ManagerAgentService:
             "manager_model_policy": "auto-by-round-complexity",
             "subagent_model_policy": "auto-by-phase",
             "token_tracking": "live-per-call",
+            "cached_tokens": session_token_usage.cached_tokens,
+            "cache_hit_ratio": cache_hit_ratio,
             "disabled_tool_ids": sorted(parse_tool_id_csv(self.settings.disabled_tool_ids_raw)),
         }
 
-    def deepseek_settings_view(self) -> DeepSeekSettingsView:
-        configured = bool((self.settings.deepseek_api_key or "").strip())
-        return DeepSeekSettingsView(
+    def llm_settings_view(self) -> LLMProviderSettingsView:
+        configured = bool((self.settings.llm_api_key or "").strip())
+        return LLMProviderSettingsView(
             configured=configured,
-            key_preview=self._mask_api_key(self.settings.deepseek_api_key),
-            base_url=self.settings.deepseek_base_url,
+            key_preview=self._mask_api_key(self.settings.llm_api_key),
+            base_url=self.settings.llm_base_url,
+            provider=self._provider_label(),
             status="ready" if configured else "missing_api_key",
         )
 
     def system_settings_view(self) -> SystemSettingsView:
-        deepseek = self.deepseek_settings_view()
+        llm = self.llm_settings_view()
         return SystemSettingsView(
-            deepseek_configured=deepseek.configured,
-            deepseek_key_preview=deepseek.key_preview,
-            deepseek_status=deepseek.status,
-            deepseek_base_url=self.settings.deepseek_base_url,
+            llm_provider="openai-compatible",
+            llm_configured=llm.configured,
+            llm_key_preview=llm.key_preview,
+            llm_status=llm.status,
+            llm_base_url=self.settings.llm_base_url,
+            deepseek_configured=llm.configured,
+            deepseek_key_preview=llm.key_preview,
+            deepseek_status=llm.status,
+            deepseek_base_url=self.settings.llm_base_url,
             manager_regular_model=self.settings.manager_regular_model,
             manager_hard_model=self.settings.manager_hard_model,
             upload_dir=str(self.settings.upload_dir),
@@ -378,15 +423,20 @@ class ManagerAgentService:
             rootfs_elf_tool_dir=str(self.settings.rootfs_elf_tool_dir) if self.settings.rootfs_elf_tool_dir else None,
         )
 
-    def update_deepseek_api_key(self, api_key: str | None) -> DeepSeekSettingsView:
-        normalized = (api_key or "").strip() or None
-        self._apply_settings_patch({"deepseek_api_key": normalized})
-        return self.deepseek_settings_view()
+    def update_llm_settings(self, api_key: str | None, base_url: str | None = None) -> LLMProviderSettingsView:
+        updates: dict[str, str | None] = {"llm_api_key": (api_key or "").strip() or None}
+        if base_url is not None:
+            updates["llm_base_url"] = (base_url or "").strip() or None
+        self._apply_settings_patch(updates)
+        return self.llm_settings_view()
 
     def update_system_settings(self, payload: SystemSettingsUpdate) -> SystemSettingsView:
+        raw_updates = payload.model_dump(exclude_unset=True)
+        if "deepseek_base_url" in raw_updates and "llm_base_url" not in raw_updates:
+            raw_updates["llm_base_url"] = raw_updates["deepseek_base_url"]
         updates = {
             key: value
-            for key, value in payload.model_dump(exclude_unset=True).items()
+            for key, value in raw_updates.items()
             if key in self.HOT_EDITABLE_SETTINGS
         }
         if not updates:
@@ -394,28 +444,92 @@ class ManagerAgentService:
         self._apply_settings_patch(updates)
         return self.system_settings_view()
 
-    async def check_deepseek_api(self, api_key: str | None = None) -> DeepSeekCheckResult:
-        normalized = (api_key or "").strip() or None
-        if not normalized and not (self.settings.deepseek_api_key or "").strip():
-            return DeepSeekCheckResult(
+    async def check_llm_api(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+    ) -> LLMProviderCheckResult:
+        normalized_key = (api_key or "").strip() or None
+        normalized_base_url = (base_url or "").strip() or None
+        normalized_model = (model or "").strip() or None
+        effective_model = normalized_model or (self.settings.manager_regular_model or "").strip() or None
+        if not normalized_key and not (self.settings.llm_api_key or "").strip():
+            return LLMProviderCheckResult(
                 available=False,
-                model=self.settings.manager_regular_model,
+                model=effective_model or "",
+                base_url=normalized_base_url or self.settings.llm_base_url,
                 status="missing_api_key",
-                error="DeepSeek API key is not configured.",
+                error="OpenAI-compatible API key is not configured.",
+            )
+        if not effective_model:
+            return LLMProviderCheckResult(
+                available=False,
+                model="",
+                base_url=normalized_base_url or self.settings.llm_base_url,
+                status="missing_regular_model",
+                error="Regular model is not configured.",
             )
         try:
-            await probe_deepseek_connection(self.settings, api_key=normalized)
+            await probe_deepseek_connection(
+                self.settings,
+                api_key=normalized_key,
+            )
+            if normalized_base_url is not None or normalized_model is not None:
+                await probe_openai_compatible_connection(
+                    self.settings,
+                    api_key=normalized_key,
+                    base_url=normalized_base_url,
+                    model=effective_model,
+                )
         except Exception as exc:
-            return DeepSeekCheckResult(
+            return LLMProviderCheckResult(
                 available=False,
-                model=self.settings.manager_regular_model,
+                model=effective_model or "",
+                base_url=normalized_base_url or self.settings.llm_base_url,
                 status="error",
                 error=str(exc),
             )
-        return DeepSeekCheckResult(
+        return LLMProviderCheckResult(
             available=True,
-            model=self.settings.manager_regular_model,
+            model=effective_model or "",
+            base_url=normalized_base_url or self.settings.llm_base_url,
             status="ready",
+        )
+
+    async def list_llm_models(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ) -> LLMProviderModelsResult:
+        normalized_key = (api_key or "").strip() or None
+        normalized_base_url = (base_url or "").strip() or None
+        effective_base_url = normalized_base_url or self.settings.llm_base_url
+        if not normalized_key and not (self.settings.llm_api_key or "").strip():
+            return LLMProviderModelsResult(
+                available=False,
+                base_url=effective_base_url,
+                status="missing_api_key",
+                error="OpenAI-compatible API key is not configured.",
+            )
+        try:
+            models = await list_openai_compatible_models(
+                self.settings,
+                api_key=normalized_key,
+                base_url=normalized_base_url,
+            )
+        except Exception as exc:
+            return LLMProviderModelsResult(
+                available=False,
+                base_url=effective_base_url,
+                status="error",
+                error=str(exc),
+            )
+        return LLMProviderModelsResult(
+            available=True,
+            base_url=effective_base_url,
+            status="ready",
+            models=[LLMModelInfo.model_validate(item) for item in models],
         )
 
     def build_report_export(self, session_id: str) -> AuditReportExport:
@@ -426,6 +540,8 @@ class ManagerAgentService:
             status=session.status,
             target_path=session.request.target_path,
             objective=session.request.objective,
+            desired_outcome=session.request.desired_outcome,
+            audit_mode=session.request.audit_mode,
             difficulty=session.request.difficulty,
             tags=session.request.tags,
             core_notes=[note.content for note in session.core_notes],
@@ -472,6 +588,14 @@ class ManagerAgentService:
             NoteEntry(content=f"目标路径: {target_path}", source="manager", is_core=True),
             NoteEntry(content=f"难度标签: {request.difficulty}", source="manager", is_core=True),
         ]
+        if request.desired_outcome:
+            notes.append(
+                NoteEntry(content=f"期望结果级别: {request.desired_outcome}", source="manager", is_core=True)
+            )
+        if request.audit_mode:
+            notes.append(
+                NoteEntry(content=f"审计模式: {request.audit_mode}", source="manager", is_core=True)
+            )
         if self.pwn_skill.available:
             notes.append(
                 NoteEntry(
@@ -479,6 +603,7 @@ class ManagerAgentService:
                         "已启用 ctf-pwn skill：本轮应优先产出可复现的动态取证与已验证 POC，"
                         "并保持结论以运行时证据和函数级分析为准。"
                         "最终结论必须显式回答当前 exploit stage 是否已推进到 RCE / getshell。"
+                        "如果还未到 RCE / getshell，必须继续逼近 leak / 栈覆盖 / RIP 可控等更高阶段，而不是停在 crash-only。"
                     ),
                     source="skill:ctf-pwn",
                     is_core=True,
@@ -504,13 +629,35 @@ class ManagerAgentService:
                 category="fixed",
                 priority=118,
             ),
+        ]
+        if request.desired_outcome:
+            entries.append(
+                SharedMemoryEntry(
+                    content=f"固定信息：用户希望拿到的结果级别是 {request.desired_outcome}。",
+                    source="manager",
+                    category="fixed",
+                    priority=119,
+                )
+            )
+        if request.audit_mode:
+            entries.append(
+                SharedMemoryEntry(
+                    content=f"固定信息：本次审计模式为 {request.audit_mode}。",
+                    source="manager",
+                    category="fixed",
+                    priority=117,
+                )
+            )
+        entries.extend(
+            [
             SharedMemoryEntry(
                 content=f"固定信息：难度标签为 {request.difficulty}。",
                 source="manager",
                 category="fixed",
                 priority=112,
             ),
-        ]
+            ]
+        )
         for item in request.analyst_notes[:3]:
             entries.append(
                 SharedMemoryEntry(
@@ -523,7 +670,10 @@ class ManagerAgentService:
         if self.pwn_skill.available:
             entries.append(
                 SharedMemoryEntry(
-                    content="固定约束：优先复用动态取证和函数级证据，最终必须明确当前 exploit stage 是否达到 RCE / getshell。",
+                    content=(
+                        "固定约束：优先复用动态取证和函数级证据，最终必须明确当前 exploit stage 是否达到 "
+                        "RCE / getshell；若未达到，也要尽量推进到 leak / 栈覆盖 / RIP 可控，而不是只停在崩溃。"
+                    ),
                     source="skill:ctf-pwn",
                     category="fixed",
                     priority=116,
@@ -778,6 +928,9 @@ class ManagerAgentService:
         session: AuditSession,
         round_index: int,
     ) -> tuple[bool, str]:
+        if round_index >= 3:
+            return False, "已达到 Manager 最大规划轮次 3，停止继续扩轮。"
+
         payloads = self._collect_rce_payloads(session)
         if any(item["stage_id"] in {"code-exec", "getshell"} for item in payloads):
             return False, ""
@@ -786,6 +939,21 @@ class ManagerAgentService:
         has_completed = any(task.status == SubAgentStatus.COMPLETED for task in latest_round_tasks)
         if not has_completed:
             return False, ""
+
+        latest_round_completed_tool_ids = {
+            evidence.command_id
+            for task in latest_round_tasks
+            for evidence in task.evidence
+            if evidence.status == "completed"
+        }
+        latest_round_blockers = [
+            f"{task.role}:{evidence.command_id}={evidence.status}"
+            for task in latest_round_tasks
+            for evidence in task.evidence[-6:]
+            if evidence.status in {"failed", "timeout", "unavailable"}
+        ]
+        if not latest_round_completed_tool_ids and latest_round_blockers:
+            return False, f"本轮仅得到工具阻塞且没有新增有效证据：{'；'.join(latest_round_blockers[:2])}。"
 
         manager_pending = [
             f"{task.role}({task.manager_step_completed}/{max(1, task.manager_step_total)})"
@@ -801,7 +969,29 @@ class ManagerAgentService:
             for evidence in task.evidence[-6:]
             if evidence.status in {"failed", "timeout", "unavailable"}
         ]
+        completed_tool_ids = {
+            evidence.command_id
+            for task in latest_round_tasks
+            for evidence in task.evidence
+            if evidence.status == "completed"
+        }
         static_candidates = self._collect_static_rce_candidates(session)
+        current_highlights = set(self._collect_manager_highlights(session))
+        previous_round_tasks = [task for task in session.subagents if task.round_index == round_index - 1]
+        previous_completed_tool_ids = {
+            evidence.command_id
+            for task in previous_round_tasks
+            for evidence in task.evidence
+            if evidence.status == "completed"
+        }
+        previous_highlights = {
+            point
+            for task in previous_round_tasks
+            for point in self._select_task_key_points(task, list(current_highlights), limit=3)
+        }
+        no_new_completed_tools = completed_tool_ids.issubset(previous_completed_tool_ids) if previous_round_tasks else False
+        no_new_highlights = current_highlights.issubset(previous_highlights) if previous_round_tasks and previous_highlights else False
+
         if payloads:
             ranked = sorted(payloads, key=lambda item: self._rce_stage_rank(item["stage_id"]), reverse=True)
             best = ranked[0]
@@ -812,6 +1002,10 @@ class ManagerAgentService:
                 return True, reason
         if static_candidates:
             return True, "当前已锁定函数级危险原语，但缺少足以把结论推进到 RCE / getshell 的动态证据。"
+        if blockers and not completed_tool_ids and not static_candidates and not payloads:
+            return False, f"本轮仅得到工具阻塞且没有新增有效证据：{'；'.join(blockers[:2])}。"
+        if round_index >= 2 and no_new_completed_tools and no_new_highlights:
+            return False, "连续轮次未产生新增有效工具结果或新增核心结论，停止继续扩轮。"
         if blockers:
             return True, f"当前仍有关键工具阻塞：{'；'.join(blockers[:2])}，Manager 将改走下一轮证据路径。"
         return False, ""
@@ -1017,6 +1211,7 @@ class ManagerAgentService:
             core_notes=core_notes,
             shared_memory=shared_memory,
             seed_evidence=seed_evidence,
+            available_tool_ids=sorted(self.toolbox.available_tool_ids()),
             objective=session.request.objective,
             target_path=session.request.target_path or task.target_path,
             manager_plan_summary=current_session.manager_plan_summary,
@@ -1142,29 +1337,6 @@ class ManagerAgentService:
 
         if poc_sections:
             lines.extend(["", "## 已验证 POC", *poc_sections])
-
-        lines.extend(["", "## 子代理归档"])
-
-        for task in session.subagents:
-            evidence_status = self._render_tool_digest(task.evidence)
-            key_points = self._select_task_key_points(task, manager_highlights, limit=2)
-            lines.extend(
-                [
-                    f"### {task.role}",
-                    f"- 轮次: 第 {task.round_index} 轮",
-                    f"- 状态: {task.status}",
-                    f"- 模型: {task.model}",
-                    f"- 干预次数: {len(task.interventions)}",
-                    f"- 工具结果: {evidence_status}",
-                ]
-            )
-            if task.container_id:
-                lines.append(f"- 容器实例: {task.container_id}")
-            if task.error:
-                lines.append(f"- 错误: {task.error}")
-            for item in key_points:
-                lines.append(f"- 已完成结论: {item}")
-            lines.append("")
         return "\n".join(lines)
 
     def _report_title(self, session: AuditSession) -> str:
@@ -1328,7 +1500,29 @@ class ManagerAgentService:
         return False
 
     def _build_subagent_core_notes(self, session: AuditSession) -> list[NoteEntry]:
-        return [note.model_copy(deep=True) for note in session.core_notes[:6]]
+        notes = [note.model_copy(deep=True) for note in session.core_notes[:8]]
+        highlights = self._collect_manager_highlights(session)[:4]
+        for index, item in enumerate(highlights):
+            notes.append(
+                NoteEntry(
+                    content=f"已确认关键结论: {item}",
+                    source=f"manager:highlight:{index}",
+                    is_core=True,
+                )
+            )
+        rce_sections = self._build_rce_assessment_section(session)[:3]
+        for index, item in enumerate(rce_sections):
+            cleaned = re.sub(r"^\s*-\s*", "", item).strip()
+            if not cleaned:
+                continue
+            notes.append(
+                NoteEntry(
+                    content=f"当前利用阶段边界: {cleaned}",
+                    source=f"manager:rce:{index}",
+                    is_core=True,
+                )
+            )
+        return notes[:12]
 
     def _select_shared_memory_for_task(
         self,
@@ -1435,6 +1629,9 @@ class ManagerAgentService:
                 brief.append(
                     f"沿用你在第{latest.round_index}轮已确认的结论：{'；'.join(key_points[:2])}"
                 )
+            prior_stage = self._extract_task_stage_boundary(latest)
+            if prior_stage:
+                brief.append(f"你在第{latest.round_index}轮的利用阶段已推进到：{prior_stage}")
 
         relevant_memory = [
             item.content
@@ -1453,7 +1650,28 @@ class ManagerAgentService:
         ]
         if prior_blockers:
             brief.append(f"本轮只补这些缺口：{'；'.join(prior_blockers[:2])}")
+        cross_role_progress = [
+            f"{task.role} 第{task.round_index}轮：{stage}"
+            for task in session.subagents
+            if task.round_index < round_index and task.role != role
+            for stage in [self._extract_task_stage_boundary(task)]
+            if stage
+        ]
+        if cross_role_progress:
+            brief.append(f"同伴上一轮阶段推进：{'；'.join(cross_role_progress[:2])}")
         return self._dedupe_text_items(brief, limit=4)
+
+    def _extract_task_stage_boundary(self, task: SubAgentTask) -> str | None:
+        sources = [task.output_summary or "", *task.promoted_notes]
+        for source in sources:
+            for raw_line in source.splitlines():
+                line = re.sub(r"\s+", " ", raw_line).strip(" -")
+                if not line:
+                    continue
+                lowered = line.lower()
+                if "getshell" in lowered or "rce" in lowered or "rip 可控" in line or "栈覆盖" in line or "信息泄露" in line or "crash-only" in lowered or "崩溃" in line:
+                    return line
+        return None
 
     async def _record_manager_llm_usage(
         self,
@@ -1952,7 +2170,8 @@ class ManagerAgentService:
         manager_highlights: list[str] = []
         seen_highlight_keys: set[str] = set()
         for task in session.subagents:
-            for note in task.promoted_notes:
+            source_notes = task.promoted_notes or self._extract_summary_key_points(task.output_summary, limit=6)
+            for note in source_notes:
                 if self._is_incomplete_report_line(note):
                     continue
                 key = self._highlight_key(note)
@@ -2222,6 +2441,16 @@ class ManagerAgentService:
                 stage_label = "已验证返回地址可控，已到控制流劫持阶段，未到 RCE / getshell"
                 verdict = "动态调试已把溢出推进到 RIP 可控，但尚未观察到命令执行或 getshell。"
                 boundary = "当前没有 system/execve 调用结果或 shell 交互回显。"
+            elif gdb_observation.get("canary_abort"):
+                stage_id = "canary-overwrite"
+                stage_label = "已验证覆盖触达 canary，尚未越过栈保护"
+                verdict = "动态调试已出现栈保护触发，说明越界写已触达 canary，但尚未证明越过栈保护后的返回地址控制。"
+                boundary = "程序在 canary 校验阶段终止，当前尚未推进到 RIP 可控。"
+            elif gdb_observation.get("frame_offset") is not None or gdb_observation.get("post_frame_offsets") or gdb_observation.get("stack_offsets"):
+                stage_id = "stack-overwrite"
+                stage_label = "已验证栈帧覆盖，尚未证明 RIP 可控"
+                verdict = "动态调试已看到循环模式进入栈帧或 saved frame 区域，但尚未证明返回地址可控。"
+                boundary = "当前没有在 RIP 上定位到循环模式，仍未推进到控制流劫持。"
             elif gdb_observation.get("signal_line") or native_probe.get("signal"):
                 stage_id = "crash-only"
                 stage_label = "已验证崩溃，尚未证明控制流劫持"
@@ -2292,6 +2521,7 @@ class ManagerAgentService:
             "code-exec": 4,
             "control-hijack": 3,
             "stack-overwrite": 2,
+            "canary-overwrite": 1,
             "info-leak": 1,
             "crash-only": 0,
             "not-validated": -1,
@@ -2373,7 +2603,10 @@ class ManagerAgentService:
                 breakpoint_line = self._compact_fact_text(gdb_observation.get("breakpoint_line"))
                 signal_line = self._compact_fact_text(gdb_observation.get("signal_line"))
                 rip_line = self._compact_fact_text(gdb_observation.get("rip_line"))
+                probe_buffer_line = self._compact_fact_text(gdb_observation.get("probe_buffer_line"))
                 control_offset = gdb_observation.get("control_offset")
+                if probe_buffer_line:
+                    rendered.append(f"- GDB 缓冲区定位: `{probe_buffer_line}`")
                 if breakpoint_line:
                     rendered.append(f"- GDB 断点命中: `{breakpoint_line}`")
                 if argument_line:
@@ -2382,6 +2615,8 @@ class ManagerAgentService:
                     rendered.append(f"- GDB 崩溃信号: `{signal_line}`")
                 if rip_line:
                     rendered.append(f"- GDB RIP 快照: `{rip_line}`")
+                if gdb_observation.get("canary_abort"):
+                    rendered.append("- GDB 栈保护: 已观察到 canary / stack smashing 触发")
                 if isinstance(control_offset, int):
                     rendered.append(f"- GDB RIP 偏移: `{control_offset}`")
 
@@ -3025,6 +3260,20 @@ class ManagerAgentService:
             return "*" * len(normalized)
         return f"{normalized[:4]}...{normalized[-4:]}"
 
+    def _provider_label(self) -> str:
+        if not (self.settings.llm_api_key or "").strip():
+            return "deepseek"
+        base_url = (self.settings.llm_base_url or "").strip().lower()
+        if "deepseek" in base_url:
+            return "deepseek"
+        return "openai-compatible"
+
+    def _provider_label_for_base_url(self, base_url: str | None) -> str:
+        normalized = (base_url or "").strip().lower()
+        if "deepseek" in normalized:
+            return "deepseek"
+        return "openai-compatible"
+
     def _apply_settings_patch(self, updates: dict[str, Any]) -> None:
         if not updates:
             return
@@ -3033,7 +3282,7 @@ class ManagerAgentService:
         for field_name, value in updates.items():
             candidate_payload[field_name] = self._normalize_setting_patch_value(value)
 
-        validated = Settings(**candidate_payload)
+        validated = Settings(_env_file=None, **candidate_payload)
         ensure_directories(validated)
 
         for field_name in Settings.model_fields:
@@ -3043,6 +3292,10 @@ class ManagerAgentService:
             env_key = self._settings_env_key(field_name)
             rendered = self._render_env_setting_value(getattr(validated, field_name))
             self._persist_env_value(env_key, rendered)
+            if field_name == "llm_api_key":
+                self._persist_env_value("DEEPSEEK_API_KEY", rendered)
+            elif field_name == "llm_base_url":
+                self._persist_env_value("DEEPSEEK_BASE_URL", rendered)
 
         self.router = ModelRouter(self.settings)
         self.llm_backend = create_llm_backend(self.settings)

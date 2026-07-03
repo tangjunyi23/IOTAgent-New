@@ -63,8 +63,6 @@ def test_manager_highlights_deduplicate_similar_notes(tmp_path: Path):
     key_section = report.split("## 关键结论", 1)[1]
     if "## RCE / getshell 结论" in key_section:
         key_section = key_section.split("## RCE / getshell 结论", 1)[0]
-    else:
-        key_section = key_section.split("## 子代理归档", 1)[0]
     highlight_lines = [line for line in key_section.splitlines() if line.startswith("- ")]
 
     assert len(highlight_lines) == 3

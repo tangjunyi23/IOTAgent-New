@@ -43,7 +43,7 @@ class FakeLLMBackend:
             )
         )
 
-    async def draft_plan(self, *, task, core_notes, selection, interventions):
+    async def draft_plan(self, *, task, core_notes, selection, interventions, available_tools=None):
         return FakeReply(f"计划: {task.role} 先做本地证据采样。")
 
     async def draft_collaboration(
@@ -57,6 +57,7 @@ class FakeLLMBackend:
         interventions,
         manager_plan_summary,
         phase_label,
+        available_tools=None,
     ):
         return FakeReply(
             "\n".join(
@@ -71,7 +72,7 @@ class FakeLLMBackend:
             )
         )
 
-    async def finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions):
+    async def finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions, available_tools=None):
         peer_notes = [item for item in core_notes if item.startswith("[来自")]
         return FakeReply(
             "\n".join(
@@ -572,7 +573,7 @@ async def test_subagent_returns_collected_evidence_when_finalize_analysis_fails(
     sample.write_bytes(b"\x7fELFfailing-finalize")
 
     class FinalizeFailBackend(FakeLLMBackend):
-        async def finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions):
+        async def finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions, available_tools=None):
             raise RuntimeError("finalize timeout")
 
     worker = SubAgentWorker(settings, llm_backend=FinalizeFailBackend())

@@ -26,6 +26,8 @@ def build_settings(tmp_path: Path) -> Settings:
         host_workspace_dir=ROOT_DIR,
         enable_docker_runtime=False,
         deepseek_api_key="test-key",
+        manager_regular_model="test-regular-model",
+        manager_hard_model="test-hard-model",
         max_parallel_subagents=2,
         tool_timeout_seconds=5,
     )
@@ -56,7 +58,7 @@ def test_session_runs_to_completion_and_exports_reports(tmp_path: Path, monkeypa
     }
     monkeypatch.setattr(BinaryToolbox, "ROLE_PIPELINES", quick_pipelines)
 
-    async def fake_draft_plan(self, *, task, core_notes, selection, interventions):
+    async def fake_draft_plan(self, *, task, core_notes, selection, interventions, available_tools=None):
         return SimpleReply(
             "\n".join(
                 [
@@ -102,7 +104,7 @@ def test_session_runs_to_completion_and_exports_reports(tmp_path: Path, monkeypa
             completion_tokens=18,
         )
 
-    async def fake_finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions):
+    async def fake_finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions, available_tools=None):
         return SimpleReply(
             "\n".join(
                 [
@@ -132,6 +134,7 @@ def test_session_runs_to_completion_and_exports_reports(tmp_path: Path, monkeypa
         interventions,
         manager_plan_summary,
         phase_label,
+        available_tools=None,
     ):
         return SimpleReply(
             "\n".join(
@@ -190,7 +193,7 @@ def test_session_runs_to_completion_and_exports_reports(tmp_path: Path, monkeypa
         assert markdown_response.status_code == 200
         assert markdown_response.headers["content-type"].startswith("text/markdown")
         assert "# Session Export Smoke" in markdown_response.text
-        assert "## 子代理归档" in markdown_response.text
+        assert "## 子代理归档" not in markdown_response.text
 
         json_response = client.get(
             f"/api/v1/audits/{created['id']}/report",
@@ -203,6 +206,7 @@ def test_session_runs_to_completion_and_exports_reports(tmp_path: Path, monkeypa
         assert exported["session_id"] == created["id"]
         assert exported["report_markdown"].startswith("# Session Export Smoke")
         assert exported["subagents"][0]["evidence"]
+        assert len(exported["subagents"]) == 2
 
 
 def test_uploaded_artifact_is_removed_after_session_finishes(tmp_path: Path, monkeypatch):
@@ -238,10 +242,10 @@ def test_uploaded_artifact_is_removed_after_session_finishes(tmp_path: Path, mon
             """
         )
 
-    async def fake_draft_plan(self, *, task, core_notes, selection, interventions):
+    async def fake_draft_plan(self, *, task, core_notes, selection, interventions, available_tools=None):
         return SimpleReply("1. 审计计划\n- 运行 file 与 sha256。\n2. 关键漏洞假设\n- 无。\n3. 需要采集的证据\n- 工具结果。")
 
-    async def fake_finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions):
+    async def fake_finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions, available_tools=None):
         return SimpleReply(
             "1. 已验证发现\n- file 已确认样本为 ELF。\n2. 关键函数深度分析\n- 本回归不下钻危险函数。\n3. 利用性判断\n- 无新增利用原语。\n4. 值得提升为核心笔记的结论\n- 上传样本主链路已执行完成。"
         )
@@ -257,6 +261,7 @@ def test_uploaded_artifact_is_removed_after_session_finishes(tmp_path: Path, mon
         interventions,
         manager_plan_summary,
         phase_label,
+        available_tools=None,
     ):
         return SimpleReply("1. 当前已确认\n- 已完成本轮证据。\n2. 希望同伴协查\n- 无。\n3. 当前阻塞\n- 无。")
 
@@ -339,6 +344,37 @@ def test_create_audit_is_rejected_when_deepseek_backend_is_not_ready(tmp_path: P
         listed = client.get("/api/v1/audits")
         assert listed.status_code == 200
         assert listed.json() == []
+
+
+def test_create_audit_is_rejected_when_models_are_not_configured(tmp_path: Path):
+    settings = build_settings(tmp_path)
+    settings.manager_regular_model = None
+    settings.manager_hard_model = None
+    app = create_app(settings)
+    sample = tmp_path / "missing-models.bin"
+    sample.write_bytes(b"\x7fELFmissing-models")
+
+    with TestClient(app) as client:
+        runtime = client.get("/api/v1/runtime")
+        assert runtime.status_code == 200
+        runtime_payload = runtime.json()
+        assert runtime_payload["llm_status"] == "missing_regular_model"
+        assert runtime_payload["llm_configured"] is True
+        assert runtime_payload["regular_model"] is None
+        assert runtime_payload["hard_model"] is None
+
+        create_response = client.post(
+            "/api/v1/audits",
+            json={
+                "title": "Missing Models",
+                "objective": "验证未配置模型时会在入口处拒绝创建审计。",
+                "target_path": str(sample),
+                "difficulty": "routine",
+                "max_subagents": 1,
+            },
+        )
+        assert create_response.status_code == 409
+        assert "Regular model is not configured." in create_response.json()["detail"]
 
 
 def test_uploaded_elf_artifact_is_saved_with_execute_bits(tmp_path: Path):
@@ -664,6 +700,27 @@ def test_system_settings_can_be_hot_updated_and_change_upload_target(tmp_path: P
         assert stored_path.is_relative_to(new_upload_dir)
 
 
+def test_non_deepseek_base_url_does_not_auto_change_models(tmp_path: Path):
+    settings = build_settings(tmp_path)
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        updated = client.put(
+            "/api/v1/settings/system",
+            json={
+                "llm_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+                "manager_regular_model": "mimo-fast",
+                "manager_hard_model": "mimo-pro",
+            },
+        )
+        assert updated.status_code == 200
+        payload = updated.json()
+        assert payload["llm_base_url"] == "https://token-plan-cn.xiaomimimo.com/v1"
+        assert payload["manager_regular_model"] == "mimo-fast"
+        assert payload["manager_hard_model"] == "mimo-pro"
+        assert settings.manager_hard_model == "mimo-pro"
+
+
 def test_tool_can_be_disabled_and_enabled_via_api(tmp_path: Path):
     settings = build_settings(tmp_path)
     app = create_app(settings)
@@ -748,10 +805,10 @@ def test_manager_can_run_multiple_rounds(tmp_path: Path, monkeypatch):
             """
         )
 
-    async def fake_draft_plan(self, *, task, core_notes, selection, interventions):
+    async def fake_draft_plan(self, *, task, core_notes, selection, interventions, available_tools=None):
         return SimpleReply("1. 审计计划\n- 运行 file。\n2. 关键漏洞假设\n- 无。\n3. 需要采集的证据\n- file 结果。")
 
-    async def fake_finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions):
+    async def fake_finalize_analysis(self, *, task, core_notes, evidence, plan, selection, interventions, available_tools=None):
         return SimpleReply(
             "\n".join(
                 [
@@ -778,6 +835,7 @@ def test_manager_can_run_multiple_rounds(tmp_path: Path, monkeypatch):
         interventions,
         manager_plan_summary,
         phase_label,
+        available_tools=None,
     ):
         return SimpleReply("1. 当前已确认\n- 已完成本轮证据。\n2. 希望同伴协查\n- 无。\n3. 当前阻塞\n- 无。")
 

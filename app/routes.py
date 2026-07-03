@@ -9,16 +9,18 @@ from app.models import (
     ArtifactRecord,
     AuditRequest,
     AuditSession,
-    DeepSeekCheckRequest,
-    DeepSeekCheckResult,
-    DeepSeekSettingsUpdate,
-    DeepSeekSettingsView,
+    LLMProviderCheckRequest,
+    LLMProviderCheckResult,
+    LLMProviderModelsResult,
+    LLMProviderSettingsUpdate,
+    LLMProviderSettingsView,
     KnowledgeEntry,
     ReportExportFormat,
     SystemSettingsUpdate,
     SystemSettingsView,
     ToolToggleUpdate,
     ToolCapability,
+    ToolHealthCheckResult,
 )
 
 router = APIRouter()
@@ -40,19 +42,21 @@ async def runtime_profile(
     return manager.runtime_profile()
 
 
-@router.get("/settings/deepseek", response_model=DeepSeekSettingsView)
-async def deepseek_settings(
+@router.get("/settings/llm", response_model=LLMProviderSettingsView)
+@router.get("/settings/deepseek", response_model=LLMProviderSettingsView)
+async def llm_settings(
     manager: ManagerAgentService = Depends(get_manager),
-) -> DeepSeekSettingsView:
-    return manager.deepseek_settings_view()
+) -> LLMProviderSettingsView:
+    return manager.llm_settings_view()
 
 
-@router.put("/settings/deepseek", response_model=DeepSeekSettingsView)
-async def update_deepseek_settings(
-    payload: DeepSeekSettingsUpdate,
+@router.put("/settings/llm", response_model=LLMProviderSettingsView)
+@router.put("/settings/deepseek", response_model=LLMProviderSettingsView)
+async def update_llm_settings(
+    payload: LLMProviderSettingsUpdate,
     manager: ManagerAgentService = Depends(get_manager),
-) -> DeepSeekSettingsView:
-    return manager.update_deepseek_api_key(payload.api_key)
+) -> LLMProviderSettingsView:
+    return manager.update_llm_settings(payload.api_key, payload.base_url)
 
 
 @router.get("/settings/system", response_model=SystemSettingsView)
@@ -73,12 +77,21 @@ async def update_system_settings(
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
-@router.post("/settings/deepseek/check", response_model=DeepSeekCheckResult)
-async def check_deepseek_settings(
-    payload: DeepSeekCheckRequest,
+@router.post("/settings/llm/check", response_model=LLMProviderCheckResult)
+@router.post("/settings/deepseek/check", response_model=LLMProviderCheckResult)
+async def check_llm_settings(
+    payload: LLMProviderCheckRequest,
     manager: ManagerAgentService = Depends(get_manager),
-) -> DeepSeekCheckResult:
-    return await manager.check_deepseek_api(payload.api_key)
+) -> LLMProviderCheckResult:
+    return await manager.check_llm_api(payload.api_key, payload.base_url, payload.model)
+
+
+@router.post("/settings/llm/models", response_model=LLMProviderModelsResult)
+async def list_llm_models(
+    payload: LLMProviderCheckRequest,
+    manager: ManagerAgentService = Depends(get_manager),
+) -> LLMProviderModelsResult:
+    return await manager.list_llm_models(payload.api_key, payload.base_url)
 
 
 @router.post("/artifacts", response_model=ArtifactRecord)
@@ -160,6 +173,13 @@ async def list_tools(
     manager: ManagerAgentService = Depends(get_manager),
 ) -> list[ToolCapability]:
     return manager.list_tool_capabilities()
+
+
+@router.post("/tool-health-check", response_model=list[ToolHealthCheckResult])
+async def check_tools(
+    manager: ManagerAgentService = Depends(get_manager),
+) -> list[ToolHealthCheckResult]:
+    return await manager.run_tool_health_checks()
 
 
 @router.put("/tools/{tool_id}", response_model=ToolCapability)

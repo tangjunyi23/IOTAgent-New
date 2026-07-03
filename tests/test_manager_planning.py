@@ -5,6 +5,7 @@ import pytest
 from app.config import ROOT_DIR, Settings, ensure_directories
 from app.manager import ManagerAgentService
 from app.models import AuditRequest, AuditSession
+from app.models import CommandEvidence, NoteEntry, SubAgentStatus, SubAgentTask
 from app.realtime import AuditEventBroker
 from app.repository import JsonRepository
 
@@ -100,3 +101,51 @@ async def test_manager_uses_llm_session_plan_to_build_tasks(tmp_path: Path):
     assert outline.phase_plan[0].phase == "阶段 1"
     assert outline.risk_watchpoints
     assert "函数级" in tasks[1].objective
+
+
+def test_manager_stops_when_round_budget_is_exhausted(tmp_path: Path):
+    settings = build_settings(tmp_path)
+    manager = ManagerAgentService(settings, JsonRepository(settings), AuditEventBroker())
+    session = AuditSession(
+        request=AuditRequest(
+            title="Stop Budget",
+            objective="验证 manager 轮次上限。",
+            target_path="/tmp/sample",
+        )
+    )
+    should_continue, reason = manager._should_continue_manager_rounds(session, 3)
+    assert should_continue is False
+    assert "最大规划轮次" in reason
+
+
+def test_manager_stops_when_only_blockers_and_no_new_evidence(tmp_path: Path):
+    settings = build_settings(tmp_path)
+    manager = ManagerAgentService(settings, JsonRepository(settings), AuditEventBroker())
+    session = AuditSession(
+        request=AuditRequest(
+            title="Stop Blockers",
+            objective="验证仅剩阻塞时 manager 停止。",
+            target_path="/tmp/sample",
+        ),
+        subagents=[
+            SubAgentTask(
+                role="triage",
+                objective="triage",
+                model="test-hard-model",
+                target_path="/tmp/sample",
+                round_index=1,
+                status=SubAgentStatus.COMPLETED,
+                evidence=[
+                    CommandEvidence(
+                        command_id="rizin_overview",
+                        command=["rizin", "-v"],
+                        return_code=1,
+                        status="unavailable",
+                    )
+                ],
+            )
+        ],
+    )
+    should_continue, reason = manager._should_continue_manager_rounds(session, 1)
+    assert should_continue is False
+    assert "工具阻塞" in reason

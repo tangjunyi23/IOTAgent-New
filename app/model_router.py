@@ -7,7 +7,7 @@ from app.models import AuditRequest, DifficultyHint
 
 
 class ModelSelection(BaseModel):
-    model: str
+    model: str | None
     thinking_enabled: bool = True
     reasoning_effort: str = "high"
     route_reason: str

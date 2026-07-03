@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>思而听二进制漏洞审计平台</title>
-    <link rel="stylesheet" href="/static/styles.css?v=20260508b" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260526e" />
   </head>
   <body>
     <div class="app-frame">
@@ -236,6 +236,16 @@
               <article class="panel-card">
                 <div class="section-heading">
                   <div>
+                    <p class="section-kicker">子代理归档</p>
+                    <h3>任务管理归档</h3>
+                  </div>
+                </div>
+                <div id="task-archive-list" class="detail-stack"></div>
+              </article>
+
+              <article class="panel-card">
+                <div class="section-heading">
+                  <div>
                     <p class="section-kicker">运行过程</p>
                     <h3>当前进度时间线</h3>
                   </div>
@@ -299,9 +309,9 @@
                     <h3>API Key 热更新</h3>
                   </div>
                 </div>
-                <form id="deepseek-settings-form" class="settings-form">
+                <form id="llm-settings-form" class="settings-form">
                   <label class="field field-wide">
-                    <span>DeepSeek API Key</span>
+                    <span>OpenAI-Compatible API Key</span>
                     <input
                       id="settings-api-key"
                       type="password"
@@ -310,16 +320,33 @@
                     />
                     <small id="settings-api-key-hint">当前未配置 API Key。</small>
                   </label>
+                  <label class="field field-wide">
+                    <span>OpenAI-Compatible Base URL</span>
+                    <input
+                      id="settings-base-url"
+                      type="text"
+                      autocomplete="off"
+                      placeholder="https://api.deepseek.com 或其他兼容 OpenAI 的 URL"
+                    />
+                  </label>
                   <div class="form-actions field-wide">
                     <button class="button button-primary" type="submit" id="save-api-key-button">
-                      保存 API Key
+                      保存 API Key / LLM 配置
                     </button>
                     <button class="button button-secondary" type="button" id="check-api-button">
                       检测当前 API
                     </button>
+                    <button class="button button-secondary" type="button" id="fetch-models-button">
+                      获取模型列表
+                    </button>
+                    <button class="button button-secondary" type="button" id="check-tools-button">
+                      检测工具环境
+                    </button>
                   </div>
                 </form>
                 <div id="api-check-status" class="api-check-status"></div>
+                <div id="llm-model-list" class="api-check-status"></div>
+                <div id="tool-health-status" class="api-check-status"></div>
               </article>
 
               <article class="panel-card settings-panel">
@@ -334,20 +361,20 @@
                     <section class="settings-section">
                       <div>
                         <p class="section-kicker">模型配置</p>
-                        <h4>DeepSeek 模型</h4>
+                        <h4>OpenAI-Compatible 模型</h4>
                       </div>
                       <div class="settings-fields-grid">
                         <label class="field">
-                          <span>DeepSeek Base URL</span>
-                          <input name="deepseek_base_url" type="text" autocomplete="off" placeholder="https://api.deepseek.com" />
+                          <span>Base URL</span>
+                          <input name="llm_base_url" type="text" autocomplete="off" placeholder="https://api.deepseek.com" />
                         </label>
                         <label class="field">
                           <span>常规模型</span>
-                          <input name="manager_regular_model" type="text" autocomplete="off" placeholder="deepseek-v4-flash" />
+                          <input name="manager_regular_model" type="text" autocomplete="off" placeholder="用户自行填写模型名" />
                         </label>
                         <label class="field">
                           <span>高难模型</span>
-                          <input name="manager_hard_model" type="text" autocomplete="off" placeholder="deepseek-v4-pro" />
+                          <input name="manager_hard_model" type="text" autocomplete="off" placeholder="用户自行填写模型名" />
                         </label>
                       </div>
                     </section>
@@ -558,6 +585,27 @@
           </label>
 
           <label class="field">
+            <span>期望结果级别</span>
+            <select id="task-desired-outcome" name="desired_outcome">
+              <option value="">由你自行填写目标</option>
+              <option value="确认漏洞并给出崩溃复现">确认漏洞并给出崩溃复现</option>
+              <option value="推进到信息泄露或栈覆盖">推进到信息泄露或栈覆盖</option>
+              <option value="推进到 RIP 可控">推进到 RIP 可控</option>
+              <option value="推进到 RCE 或 getshell">推进到 RCE 或 getshell</option>
+              <option value="尽最大可能拿到 flag">尽最大可能拿到 flag</option>
+            </select>
+          </label>
+
+          <label class="field">
+            <span>审计模式</span>
+            <input
+              id="task-audit-mode"
+              name="audit_mode"
+              placeholder="例如：本地 ELF 利用、远程 PWN、优先 flag、优先 getshell"
+            />
+          </label>
+
+          <label class="field">
             <span>最大子代理数</span>
             <input id="task-max-subagents" name="max_subagents" type="number" min="1" max="4" value="3" />
           </label>
@@ -599,6 +647,6 @@
       </div>
     </div>
 
-    <script src="/static/app.js?v=20260508d" defer></script>
+    <script src="/static/app.js?v=20260526e" defer></script>
   </body>
 </html>

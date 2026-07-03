@@ -1,6 +1,6 @@
 ---
 name: ctf-pwn
-description: Solve CTF binary exploitation challenges by validating memory-corruption bugs, building reproducible exploits, and recovering flags from local or remote binaries. Use for stack/heap overflows, format strings, ROP/ret2libc, seccomp bypass, SROP, FSOP, or other pwn tasks. Prefer runtime evidence, disassembly, and locally generated ida-no-mcp exports via the bundled headless IDA wrapper; do not use Ghidra decompilation for this skill.
+description: Solve CTF binary exploitation challenges by validating memory-corruption bugs, building reproducible exploits, and recovering flags from local or remote binaries. Use for stack/heap overflows, format strings, ROP/ret2libc, seccomp bypass, SROP, FSOP, or other pwn tasks. Prefer runtime evidence, disassembly, and the vendored `scripts/rootfs_elf/` exporters (`scripts/rootfs_elf_single.py` for a single ELF, `scripts/rootfs_elf_batch.py` for rootfs batches); treat Ghidra decompilation as a last-resort fallback only.
 ---
 
 # CTF Binary Exploitation
@@ -11,10 +11,11 @@ Solve pwn challenges with hard evidence, reproducible exploits, and reusable pos
 
 ## Hard Rules
 
-- Do not run Ghidra, ReVa, Binary Ninja decompiler, or other heavyweight decompilers for this skill.
-- When a local binary is available, first try to generate or reuse `ida-no-mcp` exports with `scripts/export_headless_pseudocode.py`.
-- Only ask the user for manual `ida-no-mcp` output when there is no local binary to run, or when there are multiple plausible target binaries and local inspection cannot disambiguate them.
-- Treat auto-generated or user-provided pseudocode as lossy. Confirm important control flow, offsets, and data flow with disassembly or runtime evidence.
+- Do not start with Ghidra, ReVa, Binary Ninja decompiler, or other heavyweight decompilers for this skill. Use them only as a last resort after the preferred IDA and debugger-driven workflow has already failed to answer the exploitability question.
+- When a local binary or extracted firmware/rootfs tree is available, first try to generate or reuse IDA exports with the vendored `scripts/rootfs_elf/` package.
+- Before invoking the vendored IDA exporters, discover a usable local IDA installation yourself. Check `IDADIR` first, then common local installs such as `~/ida-pro-*`, `/opt/idapro*`, or other obvious local `ida*` directories; only ask the user for an IDA path after local discovery fails.
+- Only ask the user for manual IDA export input when there is no local binary or rootfs tree to run locally, or when there are multiple plausible target binaries and local inspection cannot disambiguate them.
+- Treat auto-generated or user-provided pseudocode as lossy, whether it came from `rootfs_elf` or another manual IDA export. Confirm important control flow, offsets, and data flow with disassembly or runtime evidence.
 - Prefer facts from `file`, `checksec`, `readelf`, `objdump`, `strings`, `nm`, `ldd`, `gdb`/`pwndbg`, crash traces, leaks, and exploit trials.
 - Keep debugger control fully agent-owned. Do not rely on the user to open GDB, switch windows, press `continue`, or paste commands.
 - Do not use `pwntools.gdb.attach(...)` or `pwntools.gdb.debug(...)`. In pwntools they launch GDB through a separate terminal workflow, which is not autonomous enough for this skill.
@@ -26,7 +27,7 @@ Solve pwn challenges with hard evidence, reproducible exploits, and reusable pos
 Collect or request only the missing artifacts that materially affect exploitability:
 
 - Target binary, bundled `libc`, loader, Dockerfile, patch files, and remote endpoint
-- Existing `export-for-ai` artifacts or user-provided `ida-no-mcp` exports, if already present
+- Existing `export-for-ai` artifacts, `rootfs_elf` outputs, or other user-provided IDA exports, if already present
 - Challenge description, expected IO protocol, and any local run notes
 - Existing exploit or crash reproducer, if the user already has one
 
@@ -44,15 +45,17 @@ Before solving a new challenge:
 
 ## Headless Decompile First
 
-When a local binary is available:
+When a local binary or extracted tree is available:
 
-1. Identify the primary target binary from the user prompt and local files.
-2. If a complete `export-for-ai` directory already exists and is newer than the binary and the configured `INP.py`, reuse it.
-3. Otherwise run `python scripts/export_headless_pseudocode.py /path/to/binary`.
-4. If multiple ELF candidates remain after local inspection, ask the user which binary matters before exporting.
-5. If the headless export fails, continue with disassembly and debugging. Do not block on pseudocode.
+1. Identify whether the target is a single ELF or a rootfs-like tree with many ELFs.
+2. If a complete export already exists and is newer than the target binary or previous rootfs scan output is already present, reuse it.
+3. Before running either exporter, locate a usable local IDA installation yourself and prefer passing it explicitly when the wrapper supports it.
+4. For a single ELF, prefer `python3 scripts/rootfs_elf_single.py --elf /path/to/binary --out-dir /path/to/export-dir --ida-dir /path/to/ida`.
+5. For extracted firmware or rootfs trees, prefer `IDADIR=/path/to/ida python3 scripts/rootfs_elf_batch.py /path/to/rootfs -o /path/to/out-dir --run-ida --workers 4 --progress`.
+6. If multiple ELF candidates remain after local inspection, export the user-indicated challenge binary first; if the target is still ambiguous, ask the user before running a broad export.
+7. If the `rootfs_elf` export fails and disassembly plus debugging still leave a material gap, Ghidra is allowed only as the final decompilation fallback. Treat its output as low-trust pseudocode and re-check every exploit-critical fact against disassembly or runtime evidence.
 
-Read `references/headless_ida_export.md` when you need the export layout, fallback policy, or wrapper behavior.
+Read `references/headless_ida_export.md` when you need the export layout, reuse policy, or `rootfs_elf` command patterns.
 
 ## Autonomous GDB Workflow
 
@@ -72,18 +75,20 @@ Use this order when sources disagree:
 1. Runtime behavior and debugger state
 2. ELF metadata and relocation or symbol tables
 3. Disassembly and gadget search results
-4. Local or user-provided `ida-no-mcp` pseudocode
+4. Local or user-provided `rootfs_elf` or other IDA-export pseudocode
 5. Generic heuristics from prior challenges
+6. Ghidra pseudocode used as a last-resort fallback
 
 ## Core Workflow
 
 ### 1. Generate or Reuse Decompilation Artifacts
 
-- Prefer the bundled wrapper: `python scripts/export_headless_pseudocode.py /path/to/binary`
-- The wrapper uses `CTF_PWN_IDAT_PATH` / `CTF_PWN_IDA_NO_MCP_PATH` when set, otherwise it falls back to common `idat` locations and then legacy `idat64` plus `INP.py`
-- Default export location is next to the binary under `export-for-ai/`; default profile is `full`
-- Reuse existing exports when the wrapper reports `status=reused`
-- If the wrapper fails, note the failure reason from `idat.log` and keep moving with disassembly or debugging
+- Prefer `scripts/rootfs_elf_single.py` for a single ELF and `scripts/rootfs_elf_batch.py` for rootfs batches.
+- Discover a usable local IDA before running those wrappers. Reuse `IDADIR` when it is already set; otherwise probe common local installs yourself and pass `--ida-dir` for single-ELF exports or `IDADIR=/path/to/ida` for batch exports.
+- For single binaries, choose an explicit export directory next to the sample, for example `export-for-ai/<binary-name>-rootfs-elf/`, so it is easy to reuse in later turns.
+- Reuse existing exports when `source.c` plus the key indexes such as `function_index.jsonl`, `strings.txt`, and `imports.txt` are already present and newer than the target.
+- Rootfs scans write `summary.json`, `indexes/`, and `by_elf/<elf_id>/...`; use `by_elf/` for per-binary artifacts and `indexes/` for cross-binary triage. Pass `-o` explicitly so the export lives next to the challenge instead of inside the skill directory.
+- If `rootfs_elf` fails, note the reason from `ida.log` or the worker log, then continue with disassembly and debugging.
 
 ### 2. Triage the Binary
 
@@ -176,19 +181,19 @@ Prefer the smallest tool that proves the point:
 - Dynamic: `gdb`, `pwndbg`, `strace`, `ltrace`
 - Use `gdb` / `pwndbg` only through the same-session scripted workflow in `references/gdb_usage.md`
 - Exploit: `pwntools`, `ROPgadget`, `ropper`, `one_gadget`, `patchelf`
-- Headless decompilation: `python scripts/export_headless_pseudocode.py /path/to/binary`
-- Existing or user-provided analysis input: `ida-no-mcp` exports only
+- Headless decompilation: `python3 scripts/rootfs_elf_single.py --elf ... --out-dir ... --ida-dir /path/to/ida` or `IDADIR=/path/to/ida python3 scripts/rootfs_elf_batch.py ... --run-ida`
+- Last-resort decompilation: Ghidra, only after the IDA-based paths plus disassembly and debugger evidence have proven insufficient
+- Existing or user-provided analysis input: `rootfs_elf` exports or other IDA exports
 
 ## Prohibited Tooling
 
-- Do not run Ghidra for decompilation under this skill
-- Do not instruct the user to generate Ghidra output for you
 - Do not block on missing pseudocode if disassembly and debugging already answer the question
-- Do not skip the bundled headless export step when a local binary is available unless it already failed or is obviously unnecessary
+- Do not skip the vendored `scripts/rootfs_elf/` export step when a local binary or firmware tree is available unless it already failed or is obviously unnecessary
 - Do not use `pwntools.gdb.attach(...)`, `pwntools.gdb.debug(...)`, or any debugger helper that opens a new terminal, pane, or GUI window
 - Do not ask the user to attach GDB manually, run a debugger in another shell, or babysit an interactive debugging session
 - Do not leave `pause()` checkpoints or "attach now" comments as part of the normal exploit workflow
 - Do not trust pseudocode over the debugger when they disagree
+- Do not treat Ghidra output as authoritative over disassembly, ELF metadata, or debugger state
 
 ## What to Return
 
@@ -214,11 +219,13 @@ After every completed challenge:
 
 ## Resources
 
-- `scripts/export_headless_pseudocode.py`: wrapper for `idat` with legacy `idat64` fallback plus `INP.py`, configurable through `CTF_PWN_IDAT_PATH` and `CTF_PWN_IDA_NO_MCP_PATH`
+- `scripts/rootfs_elf/`: vendored RootFS ELF analysis package, kept inside the skill so the workflow survives migration to another machine
+- `scripts/rootfs_elf_single.py`: preferred single-ELF IDA exporter, producing `source.c`, `function_index.jsonl`, `decompile/`, `strings.txt`, `imports.txt`, `exports.txt`, `data_symbols.txt`, and optional `memory/`
+- `scripts/rootfs_elf_batch.py`: preferred rootfs or multi-ELF batch IDA workflow, producing `summary.json`, `indexes/`, and per-ELF artifacts under `by_elf/`
 - `scripts/resolve_ubuntu_libc_bundle.py`: parse `strings libc.so.6 | grep Ubuntu`, infer `amd64` or `i386` from `file`, match the exact Ubuntu package id in local `glibc-all-in-one`, and download or reuse the full bundle
 - `assets/pwntools_gdbserver_skeleton.py`: reusable pwntools exploit skeleton for local `gdbserver` launch, autonomous `gdb` control, and remote/local mode switching
 - `$HOME/glibc-all-in-one`: local glibc package helper; use `list` or `old_list` plus `download` or `download_old` after extracting the Ubuntu package version from the provided libc
-- `references/headless_ida_export.md`: headless export layout, reuse policy, and failure handling
+- `references/headless_ida_export.md`: `rootfs_elf` export layout, reuse policy, and fallback handling
 - `references/gdb_usage.md`: autonomous GDB usage rules for same-session debugging, batch evidence collection, and attach restrictions
 - `patterns.md`: aggregated cross-challenge signals, primitives, and exploit routes
 - `references/methodology_generation.md`: per-challenge write-up template and update rules

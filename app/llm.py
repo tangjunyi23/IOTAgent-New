@@ -26,9 +26,22 @@ ROLE_TOOL_HINTS = {
 }
 
 
-def _tool_hint_for_role(role: str, disabled_tool_ids_raw: str | None = None) -> str:
+def _tool_hint_for_role(
+    role: str,
+    disabled_tool_ids_raw: str | None = None,
+    available_tools: list[ToolCapability] | None = None,
+) -> str:
     disabled = parse_tool_id_csv(disabled_tool_ids_raw)
-    enabled_tools = [tool_id for tool_id in ROLE_TOOL_HINTS.get(role, ()) if tool_id not in disabled]
+    available_ids = {
+        item.tool_id
+        for item in (available_tools or [])
+        if item.available and item.enabled
+    }
+    enabled_tools = [
+        tool_id
+        for tool_id in ROLE_TOOL_HINTS.get(role, ())
+        if tool_id not in disabled and (not available_ids or tool_id in available_ids)
+    ]
     return ", ".join(enabled_tools) if enabled_tools else "按当前已启用的角色流水线执行对应工具"
 
 
@@ -81,6 +94,7 @@ class LLMBackend(Protocol):
         core_notes: list[str],
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         ...
 
@@ -93,6 +107,7 @@ class LLMBackend(Protocol):
         plan: str,
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         ...
 
@@ -107,6 +122,7 @@ class LLMBackend(Protocol):
         interventions: list[str],
         manager_plan_summary: str | None,
         phase_label: str,
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         ...
 
@@ -129,6 +145,10 @@ class MockLLMBackend:
                 {
                     "strategy_summary": f"围绕 {request.objective} 做多角色并行取证，优先使用 {available_ids}。",
                     "global_focus": core_notes[:4],
+                    "success_criteria": [
+                        "明确当前 exploit stage 是否至少推进到信息泄露、栈覆盖或 RIP 可控。",
+                        "若无法到达 RCE / getshell，必须精确给出当前停止边界与阻塞原因。",
+                    ],
                     "roles": [
                         {
                             "role": "triage",
@@ -161,6 +181,7 @@ class MockLLMBackend:
         core_notes: list[str],
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         rendered_notes = "; ".join(core_notes[:3]) or "暂无"
         rendered_interventions = "; ".join(interventions) or "无"
@@ -168,6 +189,7 @@ class MockLLMBackend:
         tool_hint = _tool_hint_for_role(
             task.role,
             getattr(self.settings, "disabled_tool_ids_raw", None),
+            available_tools,
         )
         return SimpleReply(
             "\n".join(
@@ -194,6 +216,7 @@ class MockLLMBackend:
         interventions: list[str],
         manager_plan_summary: str | None,
         phase_label: str,
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         evidence_status = ", ".join(f"{item.command_id}={item.status}" for item in evidence[:6]) or "无"
         peer_hint = "；".join(peer_messages[:2]) or "暂无同伴消息"
@@ -219,6 +242,7 @@ class MockLLMBackend:
         plan: str,
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         findings, risks, next_steps = self._build_evidence_summary(task.role, evidence)
         tool_status = ", ".join(f"{item.command_id}={item.status}" for item in evidence) or "无工具输出"
@@ -663,9 +687,9 @@ class MockLLMBackend:
             return None
 
 
-class MissingDeepSeekLLMBackend:
+class MissingLLMBackend:
     def __init__(self, message: str | None = None) -> None:
-        self.message = message or "DeepSeek API key is not configured. Local fallback is disabled."
+        self.message = message or "OpenAI-compatible API key is not configured. Local fallback is disabled."
 
     async def plan_session(
         self,
@@ -684,6 +708,7 @@ class MissingDeepSeekLLMBackend:
         core_notes: list[str],
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         raise RuntimeError(self.message)
 
@@ -696,6 +721,7 @@ class MissingDeepSeekLLMBackend:
         plan: str,
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         raise RuntimeError(self.message)
 
@@ -710,34 +736,74 @@ class MissingDeepSeekLLMBackend:
         interventions: list[str],
         manager_plan_summary: str | None,
         phase_label: str,
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         raise RuntimeError(self.message)
 
 
-class DeepSeekLLMBackend:
+class OpenAICompatibleLLMBackend:
     def __init__(self, settings: Settings) -> None:
         from openai import AsyncOpenAI
 
         self.settings = settings
         self.client = AsyncOpenAI(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
             timeout=None,
         )
 
     async def _complete(self, messages: list[dict[str, str]], selection: ModelSelection) -> SimpleReply:
-        kwargs: dict[str, object] = {
+        base_kwargs: dict[str, object] = {
             "model": selection.model,
             "messages": messages,
             "stream": False,
         }
-        if selection.thinking_enabled:
-            kwargs["reasoning_effort"] = selection.reasoning_effort
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-        else:
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        candidate_kwargs: list[dict[str, object]] = []
 
-        response = await self.client.chat.completions.create(**kwargs)
+        if selection.thinking_enabled:
+            candidate_kwargs.append(
+                {
+                    **base_kwargs,
+                    "reasoning_effort": selection.reasoning_effort,
+                    "extra_body": {"thinking": {"type": "enabled"}},
+                }
+            )
+            candidate_kwargs.append(
+                {
+                    **base_kwargs,
+                    "reasoning_effort": selection.reasoning_effort,
+                }
+            )
+            candidate_kwargs.append(
+                {
+                    **base_kwargs,
+                    "extra_body": {"thinking": {"type": "enabled"}},
+                }
+            )
+        else:
+            candidate_kwargs.append(
+                {
+                    **base_kwargs,
+                    "extra_body": {"thinking": {"type": "disabled"}},
+                }
+            )
+        candidate_kwargs.append(base_kwargs)
+
+        response = None
+        last_error: Exception | None = None
+        for kwargs in candidate_kwargs:
+            try:
+                response = await self.client.chat.completions.create(**kwargs)
+                break
+            except Exception as exc:
+                if not self._is_feature_compatibility_error(exc):
+                    raise
+                last_error = exc
+                continue
+
+        if response is None:
+            assert last_error is not None
+            raise last_error
         content = response.choices[0].message.content or ""
         usage = getattr(response, "usage", None)
         prompt_details = getattr(usage, "prompt_tokens_details", None) or getattr(usage, "input_tokens_details", None)
@@ -751,6 +817,19 @@ class DeepSeekLLMBackend:
             reasoning_tokens=self._usage_value(completion_details, "reasoning_tokens"),
             cached_tokens=self._usage_value(prompt_details, "cached_tokens"),
         )
+
+    def _is_feature_compatibility_error(self, exc: Exception) -> bool:
+        message = str(exc).lower()
+        compatibility_tokens = (
+            "reasoning_effort",
+            "thinking",
+            "unsupported",
+            "unknown parameter",
+            "extra_body",
+            "invalid_request_error",
+            "not permitted",
+        )
+        return any(token in message for token in compatibility_tokens)
 
     def _usage_value(self, payload: object, field_name: str) -> int:
         if payload is None:
@@ -937,11 +1016,16 @@ class DeepSeekLLMBackend:
         core_notes: list[str],
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         rendered_notes = "\n".join(f"- {item}" for item in core_notes) or "- 暂无核心笔记"
         rendered_interventions = "\n".join(f"- {item}" for item in interventions) or "- 无"
         role_focus = ROLE_PLANS.get(task.role, "围绕样本结构、输入面和利用链线索做工具驱动分析。")
-        tool_hint = _tool_hint_for_role(task.role, self.settings.disabled_tool_ids_raw)
+        tool_hint = _tool_hint_for_role(task.role, self.settings.disabled_tool_ids_raw, available_tools)
+        rendered_tools = "\n".join(
+            f"- {item.tool_id}: {'可用' if item.available and item.enabled else ('已关闭' if item.available else '不可用')}"
+            for item in (available_tools or [])
+        ) or "- 未提供工具状态"
         coordination_focus = "\n".join(f"- {item}" for item in task.coordination_focus) or "- 暂无"
         collaboration_targets = ", ".join(task.collaboration_targets) or "所有同伴"
         expected_evidence = "\n".join(f"- {item}" for item in task.expected_evidence) or "- 暂无"
@@ -954,6 +1038,8 @@ class DeepSeekLLMBackend:
                     "你必须围绕漏洞审计给出简洁、可执行的计划，不能陷入重复命令。"
                     "分析精度优先于执行速度，不要为了快速结束而过早停止取证。"
                     "你必须优先复用共享记忆与历史证据；除非当前轮次明确要求补缺口，否则不要重跑已完成的基础工具。"
+                    "若已有崩溃证据，不要把“再次验证崩溃”当成终点；必须优先寻找泄露、偏移、栈覆盖、RIP 控制或可复用利用脚本的推进机会。"
+                    "如果 canary / PIE / Full RELRO 阻断了最终利用，也必须明确当前最接近的可证明阶段，以及继续逼近需要的最小证据。"
                     "不要输出空泛表述，必须把计划落到工具、证据和验证目标。"
                     "每一步都要说明该证据将把 exploit stage 推进到哪里，尤其要回答能否逼近 RCE / getshell。"
                     "计划里必须提前考虑后续要如何回答 Attacker Condition、Server Condition 与 Security Impact（CIA），不要把这些关键条件留到最终总结时才临时补写。"
@@ -970,6 +1056,7 @@ class DeepSeekLLMBackend:
                     f"目标: {task.objective}\n"
                     f"角色聚焦: {role_focus}\n"
                     f"优先工具: {tool_hint}\n"
+                    f"当前工具状态:\n{rendered_tools}\n"
                     f"重点协作对象: {collaboration_targets}\n"
                     f"阶段目标: {task.stage_goal or '明确当前 exploit stage 边界'}\n"
                     f"跨轮延续约束:\n{continuation_brief}\n"
@@ -983,7 +1070,11 @@ class DeepSeekLLMBackend:
                     "3. 需要采集的证据：明确写出要从哪些工具结果里确认什么，并覆盖后续回答以下问题所需的证据来源：\n"
                     "- Attacker Condition（攻击者条件）：攻击者需要处于什么网络位置、需要什么权限、要注入什么具体输入\n"
                     "- Server Condition（服务器条件）：服务端需要什么前提、默认配置/插件/OS/环境边界是什么\n"
-                    "- Security Impact（安全影响）：CIA 三要素分别会受到什么影响"
+                    "- Security Impact（安全影响）：CIA 三要素分别会受到什么影响\n"
+                    "额外要求：\n"
+                    "- 只能规划当前状态为“可用”的工具；遇到不可用工具必须写替代证据路径\n"
+                    "- 若上一轮已经完成 file/checksec/readelf/strings 等基础工具，默认禁止再次规划这些基础工具，除非明确写明这次补的是哪一个新缺口\n"
+                    "- 不能把“再次确认崩溃”写成终点，必须明确计划要推进到 leak / 栈覆盖 / canary 命中 / RIP 可控 / RCE / getshell 中的哪一级"
                 ),
             },
         ]
@@ -998,6 +1089,7 @@ class DeepSeekLLMBackend:
         plan: str,
         selection: ModelSelection,
         interventions: list[str],
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         rendered_notes = "\n".join(f"- {item}" for item in core_notes) or "- 暂无核心笔记"
         rendered_interventions = "\n".join(f"- {item}" for item in interventions) or "- 无"
@@ -1026,6 +1118,7 @@ class DeepSeekLLMBackend:
                     "Server Condition 必须写清服务端前提，例如默认或非默认配置、特定插件/功能开关、OS/架构/部署环境限制；如果证据不足，必须明确写“尚未证明”。"
                     "Security Impact 不能只写“很危险”，必须按机密性（Confidentiality）/ 完整性（Integrity）/ 可用性（Availability）逐项说明；若某项未见直接影响，也要明确写“未见直接影响”。"
                     "若工具证据里已经出现 gdb_poc 的 exploit_script 或 poc 字段，必须优先说明已产出脚本化 PoC，不能只复述 GDB 命令。"
+                    "若当前只证明崩溃，必须明确写出为何仍未到 leak / 栈覆盖 / RIP 可控，以及现有证据里最接近推进的一步是什么。"
                 ),
             },
             {
@@ -1072,6 +1165,7 @@ class DeepSeekLLMBackend:
         interventions: list[str],
         manager_plan_summary: str | None,
         phase_label: str,
+        available_tools: list[ToolCapability] | None = None,
     ) -> SimpleReply:
         rendered_notes = "\n".join(f"- {item}" for item in core_notes) or "- 暂无核心笔记"
         rendered_evidence = self._render_evidence_digest(evidence, max_items=6)
@@ -1121,26 +1215,93 @@ class DeepSeekLLMBackend:
         return await self._complete(messages, selection)
 
 
-async def probe_deepseek_connection(settings: Settings, api_key: str | None = None) -> None:
-    effective_key = (api_key if api_key is not None else settings.deepseek_api_key or "").strip()
+async def probe_openai_compatible_connection(
+    settings: Settings,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> None:
+    effective_key = (api_key if api_key is not None else settings.llm_api_key or "").strip()
     if not effective_key:
-        raise RuntimeError("DeepSeek API key is not configured.")
+        raise RuntimeError("OpenAI-compatible API key is not configured.")
+    effective_base_url = (base_url if base_url is not None else settings.llm_base_url).strip()
+    effective_model = (model if model is not None else settings.manager_regular_model).strip()
 
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(
         api_key=effective_key,
-        base_url=settings.deepseek_base_url,
+        base_url=effective_base_url,
         timeout=30.0,
     )
     try:
-        await client.chat.completions.create(
-            model=settings.manager_regular_model,
-            messages=[{"role": "user", "content": "ping"}],
-            stream=False,
-            max_tokens=1,
-            extra_body={"thinking": {"type": "disabled"}},
-        )
+        errors: list[Exception] = []
+        for kwargs in (
+            {
+                "model": effective_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+                "max_tokens": 1,
+                "extra_body": {"thinking": {"type": "disabled"}},
+            },
+            {
+                "model": effective_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "stream": False,
+                "max_tokens": 1,
+            },
+        ):
+            try:
+                await client.chat.completions.create(**kwargs)
+                errors.clear()
+                break
+            except Exception as exc:
+                errors.append(exc)
+                if "thinking" not in str(exc).lower():
+                    raise
+        if errors:
+            raise errors[-1]
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+
+
+async def list_openai_compatible_models(
+    settings: Settings,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> list[dict[str, str | None]]:
+    effective_key = (api_key if api_key is not None else settings.llm_api_key or "").strip()
+    if not effective_key:
+        raise RuntimeError("OpenAI-compatible API key is not configured.")
+    effective_base_url = (base_url if base_url is not None else settings.llm_base_url).strip()
+
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(
+        api_key=effective_key,
+        base_url=effective_base_url,
+        timeout=30.0,
+    )
+    try:
+        response = await client.models.list()
+        models: list[dict[str, str | None]] = []
+        for item in getattr(response, "data", []) or []:
+            model_id = getattr(item, "id", None)
+            if not model_id:
+                continue
+            models.append(
+                {
+                    "id": str(model_id),
+                    "owned_by": getattr(item, "owned_by", None),
+                }
+            )
+        return sorted(models, key=lambda item: item["id"] or "")
     finally:
         close = getattr(client, "close", None)
         if callable(close):
@@ -1150,6 +1311,11 @@ async def probe_deepseek_connection(settings: Settings, api_key: str | None = No
 
 
 def create_llm_backend(settings: Settings) -> LLMBackend:
-    if settings.deepseek_api_key:
-        return DeepSeekLLMBackend(settings)
-    return MissingDeepSeekLLMBackend()
+    if settings.llm_api_key:
+        return OpenAICompatibleLLMBackend(settings)
+    return MissingLLMBackend()
+
+
+# Backward-compatible aliases for older imports/tests.
+DeepSeekLLMBackend = OpenAICompatibleLLMBackend
+MissingDeepSeekLLMBackend = MissingLLMBackend

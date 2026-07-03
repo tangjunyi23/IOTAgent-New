@@ -36,6 +36,7 @@
 
 html {
   scroll-behavior: smooth;
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -197,6 +198,7 @@ button {
 
 .main-shell {
   min-width: 0;
+  width: 100%;
   padding: 28px;
   display: grid;
   gap: 24px;
@@ -241,6 +243,7 @@ button {
   position: relative;
   align-content: start;
   min-height: 680px;
+  width: 100%;
 }
 
 .view {

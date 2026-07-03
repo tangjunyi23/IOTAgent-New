@@ -63,6 +63,8 @@ const DEFAULT_TASK_FORM = {
   title: "",
   objective: "对目标二进制做初始攻击面梳理、基础证据采样，并总结可能的漏洞突破口。",
   difficulty: "auto",
+  desiredOutcome: "",
+  auditMode: "",
   maxSubagents: "3",
   tags: "",
 };
@@ -103,7 +105,7 @@ const LOW_FINDING_PATTERNS = [
 ];
 
 const SYSTEM_SETTINGS_FIELDS = [
-  "deepseek_base_url",
+  "llm_base_url",
   "manager_regular_model",
   "manager_hard_model",
   "upload_dir",
@@ -136,15 +138,20 @@ const state = {
   selectedSessionId: null,
   selectionCleared: false,
   currentView: "home",
+  activeViewTransition: null,
   autoRefresh: true,
   refreshTimer: null,
   renderTimer: null,
   runtimeProfile: null,
   toolCapabilities: [],
   knowledgeEntries: [],
-  deepseekSettings: null,
+  llmSettings: null,
   systemSettings: null,
   apiCheckResult: null,
+  llmModelsResult: null,
+  toolHealthResults: null,
+  editingLlmBaseUrl: false,
+  editingSystemSettingsFields: {},
   selectedProjectSessionIds: new Set(),
   selectedCompletedSessionIds: new Set(),
   selectedKnowledgeEntryIds: new Set(),
@@ -193,6 +200,7 @@ const elements = {
   taskManagementSummary: document.getElementById("task-management-summary"),
   taskAgentBoard: document.getElementById("task-agent-board"),
   agentLogList: document.getElementById("agent-log-list"),
+  taskArchiveList: document.getElementById("task-archive-list"),
   progressLogList: document.getElementById("progress-log-list"),
   reportSessionSummary: document.getElementById("report-session-summary"),
   reportPreview: document.getElementById("report-preview"),
@@ -200,14 +208,19 @@ const elements = {
   knowledgeList: document.getElementById("knowledge-list"),
   systemStatusGrid: document.getElementById("system-status-grid"),
   toolGrid: document.getElementById("tool-grid"),
-  deepseekSettingsForm: document.getElementById("deepseek-settings-form"),
+  llmSettingsForm: document.getElementById("llm-settings-form"),
   systemSettingsForm: document.getElementById("system-settings-form"),
   settingsApiKeyInput: document.getElementById("settings-api-key"),
+  settingsBaseUrlInput: document.getElementById("settings-base-url"),
   settingsApiKeyHint: document.getElementById("settings-api-key-hint"),
   saveApiKeyButton: document.getElementById("save-api-key-button"),
   saveSystemSettingsButton: document.getElementById("save-system-settings-button"),
   checkApiButton: document.getElementById("check-api-button"),
+  fetchModelsButton: document.getElementById("fetch-models-button"),
+  checkToolsButton: document.getElementById("check-tools-button"),
   apiCheckStatus: document.getElementById("api-check-status"),
+  llmModelList: document.getElementById("llm-model-list"),
+  toolHealthStatus: document.getElementById("tool-health-status"),
   createTaskModal: document.getElementById("create-task-modal"),
   closeCreateTaskModalButton: document.getElementById("close-create-task-modal-button"),
   createTaskForm: document.getElementById("create-task-form"),
@@ -218,6 +231,8 @@ const elements = {
   taskTitle: document.getElementById("task-title"),
   taskDifficulty: document.getElementById("task-difficulty"),
   taskObjective: document.getElementById("task-objective"),
+  taskDesiredOutcome: document.getElementById("task-desired-outcome"),
+  taskAuditMode: document.getElementById("task-audit-mode"),
   taskMaxSubagents: document.getElementById("task-max-subagents"),
   taskTags: document.getElementById("task-tags"),
   appDialogModal: document.getElementById("app-dialog-modal"),
@@ -503,10 +518,14 @@ function syncViewChrome(viewName) {
 
 function showViewInstantly(viewName) {
   const resolved = VIEW_META[viewName] ? viewName : "home";
+  state.activeViewTransition = null;
   elements.viewSections.forEach((section) => {
     section.classList.toggle("is-active", section.dataset.view === resolved);
     section.classList.remove("is-transitioning", "is-leaving");
   });
+  if (elements.contentArea) {
+    elements.contentArea.style.minHeight = "";
+  }
 }
 
 function prefersReducedMotion() {
@@ -553,6 +572,8 @@ function setView(viewName, { animate = true } = {}) {
     }
   });
 
+  const transitionToken = Symbol(`view-transition:${resolved}`);
+  state.activeViewTransition = transitionToken;
   const lockedHeight = Math.max(current.offsetHeight, next.offsetHeight, 420);
   if (elements.contentArea) {
     elements.contentArea.style.minHeight = `${lockedHeight}px`;
@@ -591,17 +612,25 @@ function setView(viewName, { animate = true } = {}) {
   );
 
   Promise.allSettled([outgoing.finished, incoming.finished]).then(() => {
+    if (state.activeViewTransition !== transitionToken) {
+      return;
+    }
     elements.viewSections.forEach((section) => {
       section.classList.toggle("is-active", section === next);
       section.classList.remove("is-transitioning", "is-leaving");
     });
     if (elements.contentArea) {
-      window.setTimeout(() => {
-        if (state.currentView === resolved) {
+      window.requestAnimationFrame(() => {
+        if (state.currentView === resolved && state.activeViewTransition === transitionToken) {
           elements.contentArea.style.minHeight = "";
         }
-      }, 30);
+        if (state.activeViewTransition === transitionToken) {
+          state.activeViewTransition = null;
+        }
+      });
+      return;
     }
+    state.activeViewTransition = null;
   });
 }
 
@@ -1257,6 +1286,69 @@ function buildSharedMemoryPanel(session) {
       </div>
     </details>
   `;
+}
+
+function summarizeToolStatuses(task) {
+  const counts = {};
+  for (const item of task?.evidence || []) {
+    const key = item?.status || "unknown";
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 4)
+    .map(([status, count]) => `${labelForStatus(status)} ${count}`)
+    .join(" / ");
+}
+
+function buildSubagentArchivePanel(session) {
+  const archivedTasks = [...(session?.subagents || [])]
+    .sort((left, right) => {
+      const roundDelta = (Number(right.round_index) || 1) - (Number(left.round_index) || 1);
+      if (roundDelta !== 0) {
+        return roundDelta;
+      }
+      return (new Date(right.finished_at || right.updated_at || 0).getTime()) - (new Date(left.finished_at || left.updated_at || 0).getTime());
+    });
+  if (!archivedTasks.length) {
+    return buildEmptyBlock("暂无子代理归档", "当前项目尚未产生可归档的子代理轮次。");
+  }
+  return archivedTasks.map((task) => {
+    const promoted = (task.promoted_notes || []).slice(0, 2);
+    const plannedSteps = getTaskPlannedSteps(task).slice(0, 3);
+    const toolSummary = summarizeToolStatuses(task) || "暂无工具结果";
+    const stageText = task.manager_review_summary || task.stage_goal || "未写明当前阶段边界";
+    const summaryText = truncateText(task.output_summary || task.plan_summary || "当前轮次未产出可归档摘要。", 260);
+    return `
+      <article class="log-card archive-card">
+        <div class="log-card-head">
+          <div class="log-card-tags">
+            <span class="role-chip">${escapeHtml(labelForRole(task.role))}</span>
+            <span class="log-kind">第 ${escapeHtml(task.round_index || 1)} 轮</span>
+            <span class="status-pill status-${escapeHtml(task.status)}">${escapeHtml(labelForStatus(task.status))}</span>
+          </div>
+          <span class="stream-time">${escapeHtml(formatTime(task.finished_at || task.updated_at || session.updated_at))}</span>
+        </div>
+        <p class="knowledge-title">${escapeHtml(task.objective || "未填写目标")}</p>
+        <p class="knowledge-copy">${escapeHtml(summaryText)}</p>
+        <div class="agent-evidence-tags">
+          <span>${escapeHtml(stageText)}</span>
+          <span>${escapeHtml(toolSummary)}</span>
+          <span>Token ${escapeHtml(formatTokenCount(getTaskTokenUsage(task).total_tokens))}</span>
+        </div>
+        ${plannedSteps.length ? `
+          <div class="agent-evidence-tags">
+            ${plannedSteps.map((item) => `<span>${escapeHtml(item)}</span>`).join("")}
+          </div>
+        ` : ""}
+        ${promoted.length ? `
+          <div class="stream-summary-lines">
+            ${promoted.map((item) => `<p>${renderInlineStructuredText(item)}</p>`).join("")}
+          </div>
+        ` : ""}
+      </article>
+    `;
+  }).join("");
 }
 
 function renderInlineStructuredText(text) {
@@ -2208,11 +2300,18 @@ function renderExpandableStreamPanel(
 }
 
 function renderTaskManagementView() {
+  const preservedScrolls = {
+    summary: elements.taskManagementSummary.scrollTop,
+    logs: elements.agentLogList.scrollTop,
+    archive: elements.taskArchiveList.scrollTop,
+    progress: elements.progressLogList.scrollTop,
+  };
   const session = ensureSelectedSession();
   if (!session) {
     elements.taskManagementSummary.innerHTML = buildEmptyBlock("未选择项目", "请先在“审计项目”中选择一个项目。");
     elements.taskAgentBoard.innerHTML = buildEmptyBlock("暂无子代理进度", "选定项目后会在这里展示子代理当前进度。");
     elements.agentLogList.innerHTML = buildEmptyBlock("暂无通信日志", "选定项目后会显示 agent 之间的互相交流日志。");
+    elements.taskArchiveList.innerHTML = buildEmptyBlock("暂无子代理归档", "选定项目后会显示各轮子代理归档摘要。");
     elements.progressLogList.innerHTML = buildEmptyBlock("暂无进度时间线", "选定项目后会显示工具执行和推理阶段时间线。");
     return;
   }
@@ -2221,6 +2320,7 @@ function renderTaskManagementView() {
     elements.taskManagementSummary.innerHTML = buildEmptyBlock("正在加载项目详情", "已完成项目列表加载，正在补充当前项目的完整规划、事件流与进度数据。");
     elements.taskAgentBoard.innerHTML = buildEmptyBlock("正在加载子代理工作台", "子代理当前任务进度与协作状态即将展示。");
     elements.agentLogList.innerHTML = buildEmptyBlock("正在加载通信日志", "agent 间消息流正在同步。");
+    elements.taskArchiveList.innerHTML = buildEmptyBlock("正在加载子代理归档", "各轮子代理历史总结正在同步。");
     elements.progressLogList.innerHTML = buildEmptyBlock("正在加载进度时间线", "工具执行与推理阶段事件正在同步。");
     return;
   }
@@ -2343,6 +2443,8 @@ function renderTaskManagementView() {
       defaultOpen: false,
     }
   );
+  rememberExpandedPanels(elements.taskArchiveList);
+  elements.taskArchiveList.innerHTML = buildSubagentArchivePanel(session);
   renderActivityStreamIncremental(
     elements.progressLogList,
     progressEntries,
@@ -2351,6 +2453,12 @@ function renderTaskManagementView() {
     "timeline",
     `${session.id}|round:${activeRound}|timeline`
   );
+  window.requestAnimationFrame(() => {
+    elements.taskManagementSummary.scrollTop = preservedScrolls.summary;
+    elements.agentLogList.scrollTop = preservedScrolls.logs;
+    elements.taskArchiveList.scrollTop = preservedScrolls.archive;
+    elements.progressLogList.scrollTop = preservedScrolls.progress;
+  });
 }
 
 function renderReportsView() {
@@ -2485,7 +2593,7 @@ function renderSystemStatus() {
   const running = state.sessions.filter((session) => session.status === "running").length;
   const completed = state.sessions.filter((session) => session.status === "completed").length;
   const runtime = state.runtimeProfile || {};
-  const deepseek = state.deepseekSettings || {};
+  const llm = state.llmSettings || {};
   const disabledTools = Array.isArray(runtime.disabled_tool_ids) ? runtime.disabled_tool_ids.length : 0;
   const auditReady = runtime.llm_status === "ready";
   const globalTokenUsage = state.sessions.reduce(
@@ -2503,7 +2611,7 @@ function renderSystemStatus() {
     },
     {
       label: "API Key 状态",
-      value: deepseek.configured ? "已配置" : "未配置",
+      value: llm.configured ? "已配置" : "未配置",
     },
     {
       label: "Docker 子代理",
@@ -2528,6 +2636,10 @@ function renderSystemStatus() {
     {
       label: "累计 Token",
       value: formatTokenCount(globalTokenUsage.total_tokens),
+    },
+    {
+      label: "缓存命中率",
+      value: `${Number(runtime.cache_hit_ratio || 0).toFixed(2)}%`,
     },
     {
       label: "模型路由",
@@ -2559,39 +2671,112 @@ function renderSystemStatus() {
     .join("");
 }
 
-function renderDeepSeekSettings() {
-  const settings = state.deepseekSettings;
+function renderLlmSettings() {
+  const settings = state.llmSettings;
   if (!settings) {
     elements.settingsApiKeyHint.textContent = "正在读取当前 API Key 配置。";
+    if (elements.settingsBaseUrlInput && !state.editingLlmBaseUrl) {
+      elements.settingsBaseUrlInput.value = "";
+    }
   } else if (settings.configured) {
     elements.settingsApiKeyHint.textContent = `当前已配置 API Key：${settings.key_preview || "已隐藏"}`;
+    if (elements.settingsBaseUrlInput && !state.editingLlmBaseUrl) {
+      elements.settingsBaseUrlInput.value = settings.base_url || "";
+    }
   } else {
     elements.settingsApiKeyHint.textContent = "当前未配置 API Key。";
+    if (elements.settingsBaseUrlInput && !state.editingLlmBaseUrl) {
+      elements.settingsBaseUrlInput.value = settings.base_url || "";
+    }
   }
 
   const result = state.apiCheckResult;
   if (!result) {
-    elements.apiCheckStatus.innerHTML = buildEmptyBlock("尚未检测", "保存 API Key 后可直接检测当前 DeepSeek API 是否可用。");
-    return;
+    elements.apiCheckStatus.innerHTML = buildEmptyBlock("尚未检测", "保存配置后可直接检测当前 OpenAI-compatible API 是否可用。");
+  } else {
+    const statusClass = result.available ? "status-ok" : "status-error";
+    const summary = result.available
+      ? "已成功完成一次最小真实兼容接口请求。"
+      : (result.error || "当前请求未通过。");
+
+    elements.apiCheckStatus.innerHTML = `
+      <article class="api-status-card ${statusClass}">
+        <span class="section-kicker">API 可用性</span>
+        <strong>${escapeHtml(result.available ? "可用" : "不可用")}</strong>
+        <p>${escapeHtml(summary)}</p>
+      </article>
+      <article class="api-status-card">
+        <span class="section-kicker">检测模型</span>
+        <strong>${escapeHtml(result.model || "--")}</strong>
+        <p>${escapeHtml(formatTime(result.checked_at))}</p>
+      </article>
+      <article class="api-status-card">
+        <span class="section-kicker">Base URL</span>
+        <strong>${escapeHtml(result.base_url || "--")}</strong>
+        <p>${escapeHtml(result.provider || "openai-compatible")}</p>
+      </article>
+    `;
   }
 
-  const statusClass = result.available ? "status-ok" : "status-error";
-  const summary = result.available
-    ? "已成功完成一次最小真实 DeepSeek 请求。"
-    : (result.error || "当前请求未通过。");
+  const modelResult = state.llmModelsResult;
+  if (!modelResult) {
+    elements.llmModelList.innerHTML = buildEmptyBlock("尚未获取模型", "点击“获取模型列表”后，这里会展示当前 Base URL 下可用的模型名。");
+    return;
+  }
+  if (!modelResult.available) {
+    elements.llmModelList.innerHTML = `
+      <article class="api-status-card status-error">
+        <span class="section-kicker">模型列表获取失败</span>
+        <strong>${escapeHtml(modelResult.status || "error")}</strong>
+        <p>${escapeHtml(modelResult.error || "无法读取当前 URL 下的模型列表。")}</p>
+      </article>
+    `;
+    return;
+  }
+  const models = Array.isArray(modelResult.models) ? modelResult.models : [];
+  elements.llmModelList.innerHTML = models.length
+    ? `
+        <article class="api-status-card">
+          <span class="section-kicker">可用模型</span>
+          <strong>${escapeHtml(String(models.length))} 个</strong>
+          <p>${escapeHtml(modelResult.base_url || "--")}</p>
+        </article>
+        <article class="api-status-card">
+          <span class="section-kicker">点击填充模型</span>
+          <div class="stack-list">
+            ${models.map((item) => `
+              <div class="tool-card">
+                <div class="tool-card-head">
+                  <div>
+                    <strong class="mono">${escapeHtml(item.id)}</strong>
+                    <p class="tool-card-copy">${escapeHtml(item.owned_by || "当前接口返回的可用模型")}</p>
+                  </div>
+                </div>
+                <div class="tool-card-actions">
+                  <button class="button button-secondary" type="button" data-fill-model-target="manager_regular_model" data-fill-model-value="${escapeHtml(item.id)}">填入常规模型</button>
+                  <button class="button button-secondary" type="button" data-fill-model-target="manager_hard_model" data-fill-model-value="${escapeHtml(item.id)}">填入高难模型</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </article>
+      `
+    : buildEmptyBlock("未返回模型", "当前接口可访问，但没有返回可枚举模型。你仍可手动填写模型名。");
 
-  elements.apiCheckStatus.innerHTML = `
-    <article class="api-status-card ${statusClass}">
-      <span class="section-kicker">API 可用性</span>
-      <strong>${escapeHtml(result.available ? "可用" : "不可用")}</strong>
-      <p>${escapeHtml(summary)}</p>
-    </article>
-    <article class="api-status-card">
-      <span class="section-kicker">检测模型</span>
-      <strong>${escapeHtml(result.model || "--")}</strong>
-      <p>${escapeHtml(formatTime(result.checked_at))}</p>
-    </article>
-  `;
+  const toolHealth = state.toolHealthResults;
+  if (!toolHealth) {
+    elements.toolHealthStatus.innerHTML = buildEmptyBlock("尚未检测工具", "点击“检测工具环境”后，这里会展示每个工具是否可实际调用。");
+    return;
+  }
+  elements.toolHealthStatus.innerHTML = toolHealth.length
+    ? toolHealth.map((item) => `
+        <article class="api-status-card ${item.status === "ok" ? "status-ok" : (item.status === "disabled" ? "" : "status-error")}">
+          <span class="section-kicker">${escapeHtml(item.tool_id)}</span>
+          <strong>${escapeHtml(item.status)}</strong>
+          <p>${escapeHtml(item.details || item.summary || "--")}</p>
+        </article>
+      `).join("")
+    : buildEmptyBlock("无检测结果", "当前没有返回工具检测结果。");
 }
 
 function getSystemSettingsInput(fieldName) {
@@ -2606,6 +2791,9 @@ function populateSystemSettingsForm() {
   for (const fieldName of SYSTEM_SETTINGS_FIELDS) {
     const input = getSystemSettingsInput(fieldName);
     if (!(input instanceof HTMLInputElement)) {
+      continue;
+    }
+    if (state.editingSystemSettingsFields[fieldName]) {
       continue;
     }
     const value = state.systemSettings[fieldName];
@@ -2655,14 +2843,17 @@ function renderToolCapabilities() {
 function renderAll() {
   pruneSelections();
   ensureSelectedSession();
-  setView(state.currentView, { animate: false });
+  syncViewChrome(state.currentView);
+  if (!state.activeViewTransition) {
+    showViewInstantly(state.currentView);
+  }
   renderHomeView();
   renderProjectsView();
   renderTaskManagementView();
   renderReportsView();
   renderKnowledgeView();
   renderSystemStatus();
-  renderDeepSeekSettings();
+  renderLlmSettings();
   renderToolCapabilities();
 }
 
@@ -2731,7 +2922,7 @@ async function ensureAuditRuntimeReady() {
   if (isAuditRuntimeReady()) {
     return true;
   }
-  const detail = state.runtimeProfile?.llm_error || "当前未配置可用的 DeepSeek API Key。";
+  const detail = state.runtimeProfile?.llm_error || "当前运行配置不完整，无法创建审计任务。";
   closeCreateTaskModal();
   await notify(`当前无法创建审计任务：${detail}`, "审计后端未就绪");
   setView("settings");
@@ -2761,23 +2952,23 @@ async function ensureKnowledgeEntries({ force = false, maxAgeMs = 15000 } = {}) 
   await loadKnowledgeEntries({ render: state.currentView === "knowledge" });
 }
 
-async function loadDeepSeekSettings() {
-  state.deepseekSettings = await requestJson(`${apiPrefix}/settings/deepseek`);
-  renderDeepSeekSettings();
+async function loadLlmSettings() {
+  state.llmSettings = await requestJson(`${apiPrefix}/settings/llm`);
+  renderLlmSettings();
   renderSystemStatus();
 }
 
 async function loadSystemSettings() {
   state.systemSettings = await requestJson(`${apiPrefix}/settings/system`);
-  state.deepseekSettings = {
-    configured: state.systemSettings.deepseek_configured,
-    key_preview: state.systemSettings.deepseek_key_preview,
-    base_url: state.systemSettings.deepseek_base_url,
-    provider: "deepseek",
-    status: state.systemSettings.deepseek_status,
+  state.llmSettings = {
+    configured: state.systemSettings.llm_configured,
+    key_preview: state.systemSettings.llm_key_preview,
+    base_url: state.systemSettings.llm_base_url,
+    provider: state.systemSettings.llm_provider || "openai-compatible",
+    status: state.systemSettings.llm_status,
   };
   populateSystemSettingsForm();
-  renderDeepSeekSettings();
+  renderLlmSettings();
   renderSystemStatus();
 }
 
@@ -2796,6 +2987,8 @@ function resetCreateTaskForm() {
   elements.taskTitle.value = DEFAULT_TASK_FORM.title;
   elements.taskObjective.value = DEFAULT_TASK_FORM.objective;
   elements.taskDifficulty.value = DEFAULT_TASK_FORM.difficulty;
+  elements.taskDesiredOutcome.value = DEFAULT_TASK_FORM.desiredOutcome;
+  elements.taskAuditMode.value = DEFAULT_TASK_FORM.auditMode;
   elements.taskMaxSubagents.value = DEFAULT_TASK_FORM.maxSubagents;
   elements.taskTags.value = DEFAULT_TASK_FORM.tags;
   elements.taskFileMeta.textContent = "请选择待审计的二进制样本文件。";
@@ -2855,6 +3048,8 @@ async function handleCreateTask(event) {
       objective: elements.taskObjective.value.trim(),
       artifact_id: artifact.id,
       difficulty: elements.taskDifficulty.value,
+      desired_outcome: elements.taskDesiredOutcome.value.trim() || null,
+      audit_mode: elements.taskAuditMode.value.trim() || null,
       max_subagents: Number(elements.taskMaxSubagents.value || 3),
       tags: parseCsv(elements.taskTags.value),
     };
@@ -3028,29 +3223,37 @@ async function handleBulkDeleteKnowledgeEntries() {
 async function handleSaveApiKey(event) {
   event.preventDefault();
   const apiKey = elements.settingsApiKeyInput.value.trim();
+  const baseUrl = elements.settingsBaseUrlInput?.value.trim() || null;
   elements.saveApiKeyButton.disabled = true;
+  if (elements.fetchModelsButton) {
+    elements.fetchModelsButton.disabled = true;
+  }
   elements.saveApiKeyButton.textContent = "保存中...";
 
   try {
-    state.deepseekSettings = await requestJson(`${apiPrefix}/settings/deepseek`, {
+    state.llmSettings = await requestJson(`${apiPrefix}/settings/llm`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_key: apiKey || null }),
+      body: JSON.stringify({ api_key: apiKey || null, base_url: baseUrl || null }),
     });
     state.apiCheckResult = null;
+    state.llmModelsResult = null;
     elements.settingsApiKeyInput.value = "";
     await Promise.all([
       loadRuntimeProfile(),
       loadToolCapabilities(),
       loadSystemSettings(),
     ]);
-    renderDeepSeekSettings();
-    notify(apiKey ? "API Key 已保存。" : "API Key 已清除。", "设置已更新");
+    renderLlmSettings();
+    notify(apiKey || baseUrl ? "LLM 配置已保存。" : "LLM 配置已清除。", "设置已更新");
   } catch (error) {
-    notify(`保存 API Key 失败: ${error.message}`, "保存失败");
+    notify(`保存 LLM 配置失败: ${error.message}`, "保存失败");
   } finally {
     elements.saveApiKeyButton.disabled = false;
-    elements.saveApiKeyButton.textContent = "保存 API Key";
+    if (elements.fetchModelsButton) {
+      elements.fetchModelsButton.disabled = false;
+    }
+    elements.saveApiKeyButton.textContent = "保存 API Key / LLM 配置";
   }
 }
 
@@ -3086,20 +3289,21 @@ async function handleSaveSystemSettings(event) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(collectSystemSettingsPayload()),
     });
-    state.deepseekSettings = {
-      configured: state.systemSettings.deepseek_configured,
-      key_preview: state.systemSettings.deepseek_key_preview,
-      base_url: state.systemSettings.deepseek_base_url,
-      provider: "deepseek",
-      status: state.systemSettings.deepseek_status,
+    state.llmSettings = {
+      configured: state.systemSettings.llm_configured,
+      key_preview: state.systemSettings.llm_key_preview,
+      base_url: state.systemSettings.llm_base_url,
+      provider: state.systemSettings.llm_provider || "openai-compatible",
+      status: state.systemSettings.llm_status,
     };
     state.apiCheckResult = null;
+    state.llmModelsResult = null;
     populateSystemSettingsForm();
     await Promise.all([
       loadRuntimeProfile(),
       loadToolCapabilities(),
     ]);
-    renderDeepSeekSettings();
+    renderLlmSettings();
     notify("系统配置已保存，新的上传和新任务会立即使用最新设置。", "设置已更新");
   } catch (error) {
     notify(`保存系统配置失败: ${error.message}`, "保存失败");
@@ -3111,22 +3315,79 @@ async function handleSaveSystemSettings(event) {
 
 async function handleCheckApi() {
   const apiKey = elements.settingsApiKeyInput.value.trim();
+  const baseUrl = elements.settingsBaseUrlInput?.value.trim() || null;
+  const regularModelInput = getSystemSettingsInput("manager_regular_model");
+  const model = regularModelInput instanceof HTMLInputElement ? regularModelInput.value.trim() : "";
   elements.checkApiButton.disabled = true;
   elements.checkApiButton.textContent = "检测中...";
 
   try {
-    state.apiCheckResult = await requestJson(`${apiPrefix}/settings/deepseek/check`, {
+    state.apiCheckResult = await requestJson(`${apiPrefix}/settings/llm/check`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ api_key: apiKey || null }),
+      body: JSON.stringify({ api_key: apiKey || null, base_url: baseUrl || null, model: model || null }),
     });
-    renderDeepSeekSettings();
+    renderLlmSettings();
   } catch (error) {
     notify(`检测 API 失败: ${error.message}`, "检测失败");
   } finally {
     elements.checkApiButton.disabled = false;
     elements.checkApiButton.textContent = "检测当前 API";
   }
+}
+
+async function handleFetchModels() {
+  const apiKey = elements.settingsApiKeyInput.value.trim();
+  const baseUrl = elements.settingsBaseUrlInput?.value.trim() || null;
+  if (elements.fetchModelsButton) {
+    elements.fetchModelsButton.disabled = true;
+    elements.fetchModelsButton.textContent = "获取中...";
+  }
+
+  try {
+    state.llmModelsResult = await requestJson(`${apiPrefix}/settings/llm/models`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: apiKey || null, base_url: baseUrl || null }),
+    });
+    renderLlmSettings();
+  } catch (error) {
+    notify(`获取模型列表失败: ${error.message}`, "获取失败");
+  } finally {
+    if (elements.fetchModelsButton) {
+      elements.fetchModelsButton.disabled = false;
+      elements.fetchModelsButton.textContent = "获取模型列表";
+    }
+  }
+}
+
+async function handleCheckTools() {
+  if (elements.checkToolsButton) {
+    elements.checkToolsButton.disabled = true;
+    elements.checkToolsButton.textContent = "检测中...";
+  }
+  try {
+    state.toolHealthResults = await requestJson(`${apiPrefix}/tool-health-check`, {
+      method: "POST",
+    });
+    renderLlmSettings();
+  } catch (error) {
+    notify(`检测工具环境失败: ${error.message}`, "检测失败");
+  } finally {
+    if (elements.checkToolsButton) {
+      elements.checkToolsButton.disabled = false;
+      elements.checkToolsButton.textContent = "检测工具环境";
+    }
+  }
+}
+
+function handleFillModelInput(fieldName, value) {
+  const input = getSystemSettingsInput(fieldName);
+  if (!(input instanceof HTMLInputElement)) {
+    return;
+  }
+  input.value = value;
+  state.editingSystemSettingsFields[fieldName] = true;
 }
 
 async function handleToggleTool(toolId, enabled) {
@@ -3334,9 +3595,29 @@ function bindStaticEvents() {
   elements.resetCreateTaskButton.addEventListener("click", resetCreateTaskForm);
   elements.taskFileInput.addEventListener("change", updateTaskFileMeta);
   elements.createTaskForm.addEventListener("submit", handleCreateTask);
-  elements.deepseekSettingsForm.addEventListener("submit", handleSaveApiKey);
+  elements.llmSettingsForm.addEventListener("submit", handleSaveApiKey);
   elements.systemSettingsForm.addEventListener("submit", handleSaveSystemSettings);
   elements.checkApiButton.addEventListener("click", handleCheckApi);
+  elements.fetchModelsButton.addEventListener("click", handleFetchModels);
+  elements.checkToolsButton.addEventListener("click", handleCheckTools);
+  elements.settingsBaseUrlInput?.addEventListener("input", () => {
+    state.editingLlmBaseUrl = true;
+  });
+  elements.settingsBaseUrlInput?.addEventListener("blur", () => {
+    state.editingLlmBaseUrl = false;
+  });
+  for (const fieldName of SYSTEM_SETTINGS_FIELDS) {
+    const input = getSystemSettingsInput(fieldName);
+    if (!(input instanceof HTMLInputElement)) {
+      continue;
+    }
+    input.addEventListener("input", () => {
+      state.editingSystemSettingsFields[fieldName] = true;
+    });
+    input.addEventListener("blur", () => {
+      state.editingSystemSettingsFields[fieldName] = false;
+    });
+  }
   elements.closeAppDialogButton.addEventListener("click", () => closeAppDialog(false));
   elements.appDialogCancelButton.addEventListener("click", () => closeAppDialog(false));
   elements.appDialogConfirmButton.addEventListener("click", () => closeAppDialog(true));
@@ -3413,6 +3694,15 @@ function bindStaticEvents() {
       handleToggleTool(
         toolToggleTarget.dataset.toggleTool,
         toolToggleTarget.dataset.toggleEnabled === "true"
+      );
+      return;
+    }
+
+    const fillModelTarget = event.target.closest("[data-fill-model-target][data-fill-model-value]");
+    if (fillModelTarget) {
+      handleFillModelInput(
+        fillModelTarget.dataset.fillModelTarget,
+        fillModelTarget.dataset.fillModelValue
       );
     }
   });

@@ -140,6 +140,17 @@ class ToolCapability(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ToolHealthCheckResult(BaseModel):
+    tool_id: str
+    available: bool
+    enabled: bool
+    status: str
+    summary: str
+    details: str | None = None
+    executable: str | None = None
+    checked_at: datetime = Field(default_factory=utcnow)
+
+
 class ArtifactRecord(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     filename: str
@@ -192,6 +203,8 @@ class AuditRequest(BaseModel):
     target_path: str | None = None
     difficulty: DifficultyHint = DifficultyHint.AUTO
     max_subagents: int = 3
+    desired_outcome: str | None = None
+    audit_mode: str | None = None
     analyst_notes: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
 
@@ -244,6 +257,7 @@ class SubAgentPayload(BaseModel):
     core_notes: list[NoteEntry]
     shared_memory: list[SharedMemoryEntry] = Field(default_factory=list)
     seed_evidence: list[CommandEvidence] = Field(default_factory=list)
+    available_tool_ids: list[str] = Field(default_factory=list)
     objective: str
     target_path: str
     manager_plan_summary: str | None = None
@@ -287,6 +301,8 @@ class AuditReportExport(BaseModel):
     status: SessionStatus
     target_path: str | None = None
     objective: str
+    desired_outcome: str | None = None
+    audit_mode: str | None = None
     difficulty: DifficultyHint
     tags: list[str] = Field(default_factory=list)
     core_notes: list[str] = Field(default_factory=list)
@@ -295,38 +311,62 @@ class AuditReportExport(BaseModel):
     generated_at: datetime = Field(default_factory=utcnow)
 
 
-class DeepSeekSettingsView(BaseModel):
+class LLMProviderSettingsView(BaseModel):
     configured: bool
     key_preview: str | None = None
     base_url: str
-    provider: str = "deepseek"
+    provider: str = "openai-compatible"
     status: str
 
 
-class DeepSeekSettingsUpdate(BaseModel):
+class LLMProviderSettingsUpdate(BaseModel):
     api_key: str | None = None
+    base_url: str | None = None
 
 
-class DeepSeekCheckRequest(BaseModel):
+class LLMProviderCheckRequest(BaseModel):
     api_key: str | None = None
+    base_url: str | None = None
+    model: str | None = None
 
 
-class DeepSeekCheckResult(BaseModel):
+class LLMModelInfo(BaseModel):
+    id: str
+    owned_by: str | None = None
+
+
+class LLMProviderModelsResult(BaseModel):
     available: bool
-    provider: str = "deepseek"
+    provider: str = "openai-compatible"
+    base_url: str
+    models: list[LLMModelInfo] = Field(default_factory=list)
+    status: str
+    error: str | None = None
+    checked_at: datetime = Field(default_factory=utcnow)
+
+
+class LLMProviderCheckResult(BaseModel):
+    available: bool
+    provider: str = "openai-compatible"
     model: str
+    base_url: str
     status: str
     error: str | None = None
     checked_at: datetime = Field(default_factory=utcnow)
 
 
 class SystemSettingsView(BaseModel):
-    deepseek_configured: bool
+    llm_provider: str = "openai-compatible"
+    llm_configured: bool
+    llm_key_preview: str | None = None
+    llm_status: str
+    llm_base_url: str
+    deepseek_configured: bool | None = None
     deepseek_key_preview: str | None = None
-    deepseek_status: str
-    deepseek_base_url: str
-    manager_regular_model: str
-    manager_hard_model: str
+    deepseek_status: str | None = None
+    deepseek_base_url: str | None = None
+    manager_regular_model: str | None = None
+    manager_hard_model: str | None = None
     upload_dir: str
     audit_dir: str
     artifact_meta_dir: str
@@ -353,6 +393,7 @@ class SystemSettingsView(BaseModel):
 
 
 class SystemSettingsUpdate(BaseModel):
+    llm_base_url: str | None = None
     deepseek_base_url: str | None = None
     manager_regular_model: str | None = None
     manager_hard_model: str | None = None

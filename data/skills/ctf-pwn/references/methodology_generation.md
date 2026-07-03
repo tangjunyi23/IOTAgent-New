@@ -41,7 +41,7 @@ Promote something for future reuse only when it answers one of these:
 **Vulnerability Class**: {stack overflow / fmt / uaf / ...}
 **Primitives**: {leak, partial overwrite, arbitrary write, orw, ...}
 **Reuse Tags**: {comma-separated canonical tags}
-**User-Provided ida-no-mcp Pseudocode**: {yes/no}
+**User-Provided IDA Pseudocode**: {yes/no}
 
 ## 1. Snapshot
 

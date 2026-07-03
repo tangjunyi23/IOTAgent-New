@@ -73,7 +73,13 @@ class SubAgentWorker:
         state = AgentObservationState(
             agent_id=payload.task.id,
             role=payload.task.role,
-            system_prompt=self._build_system_prompt(payload.task.role, payload.objective),
+            system_prompt=self._build_system_prompt(
+                payload.task.role,
+                payload.objective,
+                continuation_brief=payload.task.continuation_brief,
+                available_tool_ids=payload.available_tool_ids,
+                reused_tool_ids=payload.task.reused_tool_ids,
+            ),
             notes=seeded_notes,
         )
         for note in self.pwn_skill.build_role_notes(payload.task.role):
@@ -160,6 +166,7 @@ class SubAgentWorker:
                 core_notes=core_note_text,
                 selection=plan_selection,
                 interventions=[item["content"] for item in state.consume_intervention_messages()],
+                available_tools=self._tool_capabilities_for_payload(payload),
             )
             await record_llm_usage("plan", plan_reply, plan_selection)
             plan_summary = plan_reply.content
@@ -250,6 +257,7 @@ class SubAgentWorker:
                 plan=plan_reply.content,
                 selection=summary_selection,
                 interventions=[item["content"] for item in state.consume_intervention_messages()],
+                available_tools=self._tool_capabilities_for_payload(payload),
             )
             await record_llm_usage("summary", final_reply, summary_selection)
             state.messages.append({"role": "assistant", "content": final_reply.content})
@@ -382,6 +390,7 @@ class SubAgentWorker:
                         interventions=[item["content"] for item in state.consume_intervention_messages()],
                         manager_plan_summary=payload.manager_plan_summary,
                         phase_label=phase_label,
+                        available_tools=self._tool_capabilities_for_payload(payload),
                     )
                     await record_llm_usage("collaboration", collaboration_reply, selection)
                     state.messages.append({"role": "assistant", "content": collaboration_reply.content})
@@ -510,6 +519,7 @@ class SubAgentWorker:
                     interventions=[item["content"] for item in state.consume_intervention_messages()],
                     manager_plan_summary=payload.manager_plan_summary,
                     phase_label=f"待命支援阶段 {support_round}",
+                    available_tools=self._tool_capabilities_for_payload(payload),
                 )
                 await record_llm_usage("support-collaboration", collaboration_reply, selection)
                 state.messages.append({"role": "assistant", "content": collaboration_reply.content})
@@ -550,6 +560,7 @@ class SubAgentWorker:
                 plan=plan,
                 selection=selection,
                 interventions=[item["content"] for item in state.consume_intervention_messages()],
+                available_tools=self._tool_capabilities_for_payload(payload),
             )
             await record_llm_usage("summary-refresh", refreshed_reply, selection)
         except Exception as exc:
@@ -658,14 +669,37 @@ class SubAgentWorker:
         priority -= min(note.retrieval_count, 8) * 4
         return priority
 
-    def _build_system_prompt(self, role: str, objective: str) -> str:
+    def _tool_capabilities_for_payload(self, payload: SubAgentPayload):
+        available = set(payload.available_tool_ids or [])
+        return [item for item in self.toolbox.list_capabilities() if item.tool_id in available]
+
+    def _build_system_prompt(
+        self,
+        role: str,
+        objective: str,
+        *,
+        continuation_brief: list[str] | None = None,
+        available_tool_ids: list[str] | None = None,
+        reused_tool_ids: list[str] | None = None,
+    ) -> str:
+        continuation_text = "；".join(item.strip() for item in (continuation_brief or []) if item and item.strip())
+        available_tools_text = ", ".join(item for item in (available_tool_ids or []) if item) or "无"
+        reused_tools_text = ", ".join(item for item in (reused_tool_ids or []) if item) or "无"
         return (
             f"你是二进制漏洞审计平台中的 `{role}` 子代理。"
             f"你的目标是：{objective}。"
             "你必须输出面向漏洞审计的结论，不得空转或重复相同命令。"
             "你与其他子代理共享会话级协作信箱和共享记忆，可以读取同伴阶段性结论，但必须保留自己的独立判断。"
-            "若共享记忆或历史证据已经覆盖基础事实，就不要重复分析同一批基础工具结果。"
+            "每一轮都必须显式继承上一轮已完成的工具结果、共享记忆和已证明 exploit stage，禁止把本轮当作从零开始。"
+            "若共享记忆、已复用证据或历史结论已经覆盖基础事实，就不要重复分析同一批基础工具结果。"
+            "当前可用工具只限于这份清单，不得规划或依赖清单外工具："
+            f"{available_tools_text}。"
+            "如果某个工具不可用，就必须明确改走旁路证据路径，而不是反复请求同一 unavailable 工具。"
+            f"本轮已复用的历史工具结果：{reused_tools_text}。"
+            "若已有崩溃证据，不要把再次验证崩溃当作终点；必须优先寻找泄露、栈覆盖、canary 命中、RIP 控制、RCE、getshell 或 flag 的推进证据。"
+            "若 canary / PIE / Full RELRO 阻断最终利用，也必须明确当前最接近的已验证边界，以及继续推进所需的最小证据。"
             "遇到阻塞时要主动提问；收到同伴问题时，只要你手里有证据就要尽快回应。"
+            + (f"跨轮延续约束：{continuation_text}。" if continuation_text else "")
         )
 
     async def _publish_peer_message(
@@ -1222,9 +1256,13 @@ class DockerSubAgentRuntime:
             "--cidfile",
             str(cidfile_path),
             "-e",
-            f"DEEPSEEK_API_KEY={self.settings.deepseek_api_key or ''}",
+            f"LLM_API_KEY={self.settings.llm_api_key or ''}",
             "-e",
-            f"DEEPSEEK_BASE_URL={self.settings.deepseek_base_url}",
+            f"LLM_BASE_URL={self.settings.llm_base_url}",
+            "-e",
+            f"DEEPSEEK_API_KEY={self.settings.llm_api_key or ''}",
+            "-e",
+            f"DEEPSEEK_BASE_URL={self.settings.llm_base_url}",
             "-e",
             f"LOOP_THRESHOLD={self.settings.loop_threshold}",
             "-e",
@@ -1322,7 +1360,7 @@ class DockerSubAgentRuntime:
         configured = self.settings.subagent_docker_network_mode.strip().lower()
         if configured and configured != "auto":
             return configured
-        return "bridge" if self.settings.deepseek_api_key else "none"
+        return "bridge" if self.settings.llm_api_key else "none"
 
     def _prepare_container_target(self, host_path: str, runtime_dir: Path) -> str:
         host = Path(host_path).resolve()

@@ -34,10 +34,10 @@ class Settings(BaseSettings):
     )
     env_file_path: Path = Field(default=ROOT_DIR / ".env", alias="ENV_FILE_PATH")
 
-    deepseek_api_key: str | None = Field(default=None, alias="DEEPSEEK_API_KEY")
-    deepseek_base_url: str = Field(default="https://api.deepseek.com", alias="DEEPSEEK_BASE_URL")
-    manager_regular_model: str = Field(default="deepseek-v4-flash", alias="MANAGER_REGULAR_MODEL")
-    manager_hard_model: str = Field(default="deepseek-v4-pro", alias="MANAGER_HARD_MODEL")
+    llm_api_key: str | None = Field(default=None, alias="LLM_API_KEY")
+    llm_base_url: str = Field(default="https://api.deepseek.com", alias="LLM_BASE_URL")
+    manager_regular_model: str | None = Field(default=None, alias="MANAGER_REGULAR_MODEL")
+    manager_hard_model: str | None = Field(default=None, alias="MANAGER_HARD_MODEL")
     disabled_tool_ids_raw: str = Field(default="afl_showmap_probe", alias="DISABLED_TOOL_IDS")
 
     enable_docker_runtime: bool = Field(default=False, alias="ENABLE_DOCKER_RUNTIME")
@@ -96,7 +96,62 @@ class Settings(BaseSettings):
             self.rootfs_elf_tool_dir = ROOT_DIR / self.rootfs_elf_tool_dir
         if self.pwn_skill_zip_path is not None and not self.pwn_skill_zip_path.is_absolute():
             self.pwn_skill_zip_path = ROOT_DIR / self.pwn_skill_zip_path
+        if self.pwn_skill_zip_path is not None and not self.pwn_skill_zip_path.exists():
+            fallback_candidates = (
+                Path.home() / "pwnskill.zip",
+                Path.home() / "ctf-pwn-skill-with-kb-2026-04-30.zip",
+            )
+            for candidate in fallback_candidates:
+                if candidate.exists():
+                    self.pwn_skill_zip_path = candidate
+                    break
         return self
+
+    @property
+    def deepseek_api_key(self) -> str | None:
+        return self.llm_api_key
+
+    @deepseek_api_key.setter
+    def deepseek_api_key(self, value: str | None) -> None:
+        object.__setattr__(self, "llm_api_key", value)
+
+    @property
+    def deepseek_base_url(self) -> str:
+        return self.llm_base_url
+
+    @deepseek_base_url.setter
+    def deepseek_base_url(self, value: str) -> None:
+        object.__setattr__(self, "llm_base_url", value)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_llm_env(cls, data):
+        if not isinstance(data, dict):
+            return data
+        copied = dict(data)
+        if "deepseek_api_key" in copied:
+            copied["llm_api_key"] = copied["deepseek_api_key"]
+            copied["LLM_API_KEY"] = copied["deepseek_api_key"]
+            if "deepseek_base_url" not in copied:
+                copied["llm_base_url"] = "https://api.deepseek.com"
+                copied["LLM_BASE_URL"] = "https://api.deepseek.com"
+        elif "DEEPSEEK_API_KEY" in copied and "llm_api_key" not in copied and "LLM_API_KEY" not in copied:
+            copied["llm_api_key"] = copied["DEEPSEEK_API_KEY"]
+            copied["LLM_API_KEY"] = copied["DEEPSEEK_API_KEY"]
+        elif "deepseek_api_key" not in copied and "llm_api_key" not in copied and "LLM_API_KEY" not in copied and copied.get("DEEPSEEK_API_KEY"):
+            copied["llm_api_key"] = copied["DEEPSEEK_API_KEY"]
+            copied["LLM_API_KEY"] = copied["DEEPSEEK_API_KEY"]
+
+        if "deepseek_base_url" in copied:
+            copied["llm_base_url"] = copied["deepseek_base_url"]
+            copied["LLM_BASE_URL"] = copied["deepseek_base_url"]
+        elif "DEEPSEEK_BASE_URL" in copied and "llm_base_url" not in copied and "LLM_BASE_URL" not in copied:
+            copied["llm_base_url"] = copied["DEEPSEEK_BASE_URL"]
+            copied["LLM_BASE_URL"] = copied["DEEPSEEK_BASE_URL"]
+        elif "deepseek_base_url" not in copied and "llm_base_url" not in copied and "LLM_BASE_URL" not in copied and copied.get("DEEPSEEK_BASE_URL"):
+            copied["llm_base_url"] = copied["DEEPSEEK_BASE_URL"]
+            copied["LLM_BASE_URL"] = copied["DEEPSEEK_BASE_URL"]
+        return copied
 
 
 def ensure_directories(settings: Settings) -> None:

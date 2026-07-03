@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from app.config import Settings, parse_tool_id_csv
-from app.models import AuditEvent, CommandEvidence, EventKind, ToolCapability
+from app.models import AuditEvent, CommandEvidence, EventKind, ToolCapability, ToolHealthCheckResult
 from app.pwn_skill import PwnSkillPack
 from app.target_utils import ensure_target_executable
 
@@ -88,30 +88,35 @@ class BinaryToolbox:
             "checksec",
             "elf_header",
             "rizin_overview",
+            "function_disasm",
         ],
         "static-analysis": [
             "section_headers",
             "symbol_table",
             "ida_batch",
             "angr_cfg",
+            "function_disasm",
         ],
         "dynamic-analysis": [
             "program_headers",
             "dynamic_section",
             "gdb_batch",
             "afl_showmap_probe",
+            "function_disasm",
         ],
         "exploitability-review": [
             "strings_preview",
             "checksec",
             "gdb_batch",
             "angr_cfg",
+            "function_disasm",
         ],
         "exploit-strategy": [
             "strings_preview",
             "section_headers",
             "afl_showmap_probe",
             "ida_batch",
+            "function_disasm",
         ],
     }
 
@@ -212,6 +217,20 @@ idc.qexit(0)
     def list_capabilities(self) -> list[ToolCapability]:
         return [self._build_capability(tool_id) for tool_id in self.TOOL_DESCRIPTORS]
 
+    def available_tool_ids(self) -> set[str]:
+        return {
+            capability.tool_id
+            for capability in self.list_capabilities()
+            if capability.available and capability.enabled
+        }
+
+    async def run_health_checks(self) -> list[ToolHealthCheckResult]:
+        results: list[ToolHealthCheckResult] = []
+        for tool_id in self.TOOL_DESCRIPTORS:
+            capability = self._build_capability(tool_id)
+            results.append(await self._check_capability_health(capability))
+        return results
+
     def plan_follow_up(
         self,
         role: str,
@@ -219,7 +238,7 @@ idc.qexit(0)
         round_index: int,
         peer_notes: list[str] | None = None,
     ) -> list[FollowUpRequest]:
-        if not self.is_tool_enabled("function_disasm"):
+        if not self.is_tool_enabled("function_disasm") or not self._build_capability("function_disasm").available:
             return []
         if role not in {"triage", "static-analysis", "exploitability-review", "exploit-strategy", "dynamic-analysis"}:
             return []
@@ -251,6 +270,7 @@ idc.qexit(0)
             round_index >= 2
             and role in {"dynamic-analysis", "exploit-strategy", "exploitability-review"}
             and self.is_tool_enabled("gdb_poc")
+            and self._build_capability("gdb_poc").available
         ):
             issue_targets = self._extract_issue_targets(evidence)
             pending_issue_targets = self._filter_issue_targets_missing_poc(evidence, issue_targets)
@@ -270,7 +290,7 @@ idc.qexit(0)
             focus_functions,
             self._extract_follow_up_function_keys(evidence, "function_xrefs"),
         )
-        if pending_xrefs and self.is_tool_enabled("function_xrefs"):
+        if pending_xrefs and self.is_tool_enabled("function_xrefs") and self._build_capability("function_xrefs").available:
             return [
                 FollowUpRequest(
                     command_id="function_xrefs",
@@ -341,7 +361,9 @@ idc.qexit(0)
         pipeline = [
             tool_id
             for tool_id in self.ROLE_PIPELINES.get(role, self.ROLE_PIPELINES["triage"])
-            if self.is_tool_enabled(tool_id) and tool_id not in completed_command_ids
+            if self.is_tool_enabled(tool_id)
+            and self._build_capability(tool_id).available
+            and tool_id not in completed_command_ids
         ]
         evidence: list[CommandEvidence] = list(reused_evidence)
 
@@ -1027,6 +1049,7 @@ idc.qexit(0)
         probe_length = self._select_overflow_probe_length(issue_target.issue_evidence)
         pattern = self._build_cyclic_pattern(probe_length)
         payload = pattern + b"\n"
+        buffer_reg, length_reg = self._overflow_probe_registers(issue_target.call_target)
 
         with tempfile.TemporaryDirectory(dir=self.settings.runtime_dir) as temp_dir:
             temp_root = Path(temp_dir)
@@ -1036,18 +1059,65 @@ idc.qexit(0)
             gdb_commands = [
                 "set pagination off",
                 "set confirm off",
+                "set breakpoint pending on",
+                "set print thread-events off",
                 "set debuginfod enabled off",
                 "handle SIGALRM nostop noprint pass",
+                "handle SIGPIPE nostop noprint pass",
                 f"break *{hex(breakpoint_address)}",
                 f"run < {shlex.quote(str(input_path))}",
+                'printf "===PRECALL===\\n"',
                 "x/i $pc",
                 "info registers rdi rsi rdx rcx r8 r9 rbp rsp",
-                "continue",
-                "info program",
-                "info registers rip rsp rbp",
-                "x/16gx $rsp",
-                "bt",
+                'printf "===FRAME_PRE===\\n"',
+                "x/24gx $rbp-0x80",
             ]
+            if buffer_reg:
+                gdb_commands.extend(
+                    [
+                        f"set $probe_buf = ${buffer_reg}",
+                        'printf "PROBE_BUF=%p\\n", $probe_buf',
+                        'printf "===BUF_PRE===\\n"',
+                        "x/64bx $probe_buf",
+                    ]
+                )
+            if length_reg:
+                gdb_commands.extend(
+                    [
+                        f"set $probe_len = ${length_reg}",
+                        'printf "PROBE_LEN=%llu\\n", (unsigned long long)$probe_len',
+                    ]
+                )
+            gdb_commands.extend(
+                [
+                    'printf "===CALL_STEP===\\n"',
+                    "ni",
+                    'printf "===POSTCALL===\\n"',
+                    "x/i $pc",
+                    "info registers rip rbp rsp",
+                    'printf "===FRAME_POST===\\n"',
+                    "x/24gx $rbp-0x80",
+                ]
+            )
+            if buffer_reg:
+                gdb_commands.extend(
+                    [
+                        'printf "===BUF_POST===\\n"',
+                        "x/96bx $probe_buf",
+                    ]
+                )
+            gdb_commands.extend(
+                [
+                    'printf "===CONTINUE===\\n"',
+                    "continue",
+                    'printf "===POSTSIGNAL===\\n"',
+                    "info program",
+                    "info registers rip rsp rbp",
+                    "x/24gx $rsp",
+                    "x/24gx $rbp-0x80",
+                    "bt",
+                ]
+            )
             argv = [executable, "-q", "-nx", "-batch"]
             for command in gdb_commands:
                 argv.extend(["-ex", command])
@@ -1315,6 +1385,16 @@ idc.qexit(0)
             return min(max(capacity + 0x60, 0x120), 0x400)
         return 0x180
 
+    def _overflow_probe_registers(self, call_target: str) -> tuple[str | None, str | None]:
+        normalized = (call_target or "").split("@", 1)[0].replace("sym.imp.", "").strip().lower()
+        if normalized == "read":
+            return "rsi", "rdx"
+        if normalized in {"fgets", "gets"}:
+            return "rdi", "rsi" if normalized == "fgets" else None
+        if normalized in {"recv", "recvfrom"}:
+            return "rsi", "rdx"
+        return None, None
+
     def _extract_issue_size(self, issue_evidence: str, field_name: str) -> int | None:
         pattern = rf"{re.escape(field_name)}(?:≈|=)(0x[0-9a-fA-F]+|\d+)"
         match = re.search(pattern, issue_evidence or "")
@@ -1350,6 +1430,22 @@ idc.qexit(0)
             if offset >= 0:
                 return offset
         return None
+
+    def _collect_pattern_offsets(self, pattern: bytes, lines: list[str]) -> list[dict[str, Any]]:
+        matches: list[dict[str, Any]] = []
+        seen: set[tuple[str, int]] = set()
+        for line in lines:
+            values = re.findall(r"0x[0-9a-fA-F]+", line)
+            for value_text in values[1:]:
+                offset = self._cyclic_find(pattern, value_text)
+                if offset is None:
+                    continue
+                key = (value_text, offset)
+                if key in seen:
+                    continue
+                seen.add(key)
+                matches.append({"value": value_text, "offset": offset})
+        return matches
 
     def _run_raw_native_probe(self, target: Path, payload: bytes) -> dict[str, Any]:
         command = [str(target)]
@@ -1404,68 +1500,122 @@ idc.qexit(0)
         call_target: str,
         native_probe: dict[str, Any],
     ) -> dict[str, Any]:
+        section = "general"
         pc_line = ""
         register_preview: list[str] = []
         signal_line = ""
         rip_line = ""
         rsp_line = ""
         rbp_line = ""
-        stack_preview: list[str] = []
         backtrace_line = ""
-        signal_seen = False
+        pre_frame_preview: list[str] = []
+        post_frame_preview: list[str] = []
+        postsignal_stack_preview: list[str] = []
+        pre_buffer_preview: list[str] = []
+        post_buffer_preview: list[str] = []
+        probe_buffer_line = ""
+        probe_length_line = ""
+        postcall_pc_line = ""
 
         for raw_line in stdout.splitlines():
             line = raw_line.strip()
             if not line:
                 continue
-            if line.startswith("=>") and not pc_line:
-                pc_line = line
+            if line == "===PRECALL===":
+                section = "precall"
                 continue
-            if not signal_seen and line.startswith(("rdi", "rsi", "rdx", "rcx", "r8", "r9", "rbp", "rsp")):
+            if line == "===FRAME_PRE===":
+                section = "frame-pre"
+                continue
+            if line == "===BUF_PRE===":
+                section = "buf-pre"
+                continue
+            if line == "===CALL_STEP===":
+                section = "call-step"
+                continue
+            if line == "===POSTCALL===":
+                section = "postcall"
+                continue
+            if line == "===FRAME_POST===":
+                section = "frame-post"
+                continue
+            if line == "===BUF_POST===":
+                section = "buf-post"
+                continue
+            if line == "===CONTINUE===":
+                section = "continue"
+                continue
+            if line == "===POSTSIGNAL===":
+                section = "postsignal"
+                continue
+
+            if line.startswith("=>"):
+                if not pc_line:
+                    pc_line = line
+                elif section == "postcall" and not postcall_pc_line:
+                    postcall_pc_line = line
+                continue
+            if section == "precall" and line.startswith(("rdi", "rsi", "rdx", "rcx", "r8", "r9", "rbp", "rsp")):
                 if len(register_preview) < 8:
                     register_preview.append(line)
                 continue
+            if line.startswith("PROBE_BUF=") and not probe_buffer_line:
+                probe_buffer_line = line
+                continue
+            if line.startswith("PROBE_LEN=") and not probe_length_line:
+                probe_length_line = line
+                continue
             if ("Program received signal" in line or "SIGSEGV" in line or "SIGABRT" in line) and not signal_line:
                 signal_line = line
-                signal_seen = True
                 continue
-            if signal_seen and line.startswith("rip") and not rip_line:
+            if section == "postsignal" and line.startswith("rip") and not rip_line:
                 rip_line = line
                 continue
-            if signal_seen and line.startswith("rsp") and not rsp_line:
+            if section == "postsignal" and line.startswith("rsp") and not rsp_line:
                 rsp_line = line
                 continue
-            if signal_seen and line.startswith("rbp") and not rbp_line:
+            if section == "postsignal" and line.startswith("rbp") and not rbp_line:
                 rbp_line = line
-                continue
-            if signal_seen and line.startswith("0x") and len(stack_preview) < 6:
-                stack_preview.append(line)
                 continue
             if line.startswith("#0") and not backtrace_line:
                 backtrace_line = line
+                continue
+            if section == "frame-pre" and line.startswith("0x") and len(pre_frame_preview) < 10:
+                pre_frame_preview.append(line)
+                continue
+            if section == "frame-post" and line.startswith("0x") and len(post_frame_preview) < 10:
+                post_frame_preview.append(line)
+                continue
+            if section == "postsignal" and line.startswith("0x") and len(postsignal_stack_preview) < 10:
+                postsignal_stack_preview.append(line)
+                continue
+            if section == "buf-pre" and line.startswith("0x") and len(pre_buffer_preview) < 8:
+                pre_buffer_preview.append(line)
+                continue
+            if section == "buf-post" and line.startswith("0x") and len(post_buffer_preview) < 12:
+                post_buffer_preview.append(line)
 
         rip_value = self._extract_hex_from_text(rip_line)
         rbp_value = self._extract_hex_from_text(rbp_line)
         control_offset = self._cyclic_find(pattern, rip_value) if rip_value else None
         frame_offset = self._cyclic_find(pattern, rbp_value) if rbp_value else None
-        stack_offsets: list[dict[str, Any]] = []
-        for line in stack_preview:
-            values = re.findall(r"0x[0-9a-fA-F]+", line)
-            for value_text in values[1:]:
-                offset = self._cyclic_find(pattern, value_text)
-                if offset is not None:
-                    stack_offsets.append({"value": value_text, "offset": offset})
-                    break
+        post_frame_offsets = self._collect_pattern_offsets(pattern, post_frame_preview)
+        stack_offsets = self._collect_pattern_offsets(pattern, postsignal_stack_preview)
+        buffer_offsets = self._collect_pattern_offsets(pattern, post_buffer_preview)
+        canary_abort = "stack smashing detected" in stdout.lower() or "__stack_chk_fail" in stdout.lower()
 
         stage_id = "not-validated"
         stage_label = "未验证到可利用阶段"
         if control_offset is not None:
             stage_id = "control-hijack"
-            stage_label = "已验证返回地址可控，未到 getshell"
-        elif frame_offset is not None or stack_offsets:
+            stage_label = "已验证返回地址可控，已到控制流劫持阶段"
+        elif frame_offset is not None or post_frame_offsets or stack_offsets:
             stage_id = "stack-overwrite"
             stage_label = "已验证栈帧覆盖，尚未证明 RIP 可控"
-        elif signal_line or native_probe.get("signal"):
+        elif canary_abort:
+            stage_id = "canary-overwrite"
+            stage_label = "已验证覆盖触达 canary，尚未越过栈保护"
+        elif signal_line or native_probe.get("signal") or buffer_offsets:
             stage_id = "crash-only"
             stage_label = "已验证可触发崩溃，尚未证明控制流劫持"
 
@@ -1474,16 +1624,26 @@ idc.qexit(0)
             "stage_id": stage_id,
             "stage_label": stage_label,
             "breakpoint_line": pc_line,
+            "postcall_pc_line": postcall_pc_line,
             "register_preview": register_preview,
             "signal_line": signal_line,
             "rip_line": rip_line,
             "rsp_line": rsp_line,
             "rbp_line": rbp_line,
-            "stack_preview": stack_preview,
+            "pre_frame_preview": pre_frame_preview,
+            "post_frame_preview": post_frame_preview,
+            "stack_preview": postsignal_stack_preview,
+            "pre_buffer_preview": pre_buffer_preview,
+            "post_buffer_preview": post_buffer_preview,
             "backtrace_line": backtrace_line,
+            "probe_buffer_line": probe_buffer_line,
+            "probe_length_line": probe_length_line,
             "control_offset": control_offset,
             "frame_offset": frame_offset,
+            "post_frame_offsets": post_frame_offsets,
             "stack_offsets": stack_offsets,
+            "buffer_offsets": buffer_offsets,
+            "canary_abort": canary_abort,
             "call_hint": call_target.split("@", 1)[0].lower(),
             "breakpoint_address": hex(breakpoint_address),
         }
@@ -1504,11 +1664,18 @@ idc.qexit(0)
                 "说明漏洞不再停留在崩溃层面，但尚未观测到命令执行或 shell 交互。"
             )
             boundary = "当前没有执行到 system/execve，也没有观察到 shell 提示或命令回显。"
+        elif stage_id == "canary-overwrite":
+            stage_label = "已验证覆盖触达 canary，尚未越过栈保护"
+            verdict = (
+                f"{issue_target.name} 的动态调试已看到栈保护触发，说明越界写已经跨过普通局部变量并触达 canary。"
+                "当前边界高于 crash-only，但仍未证明 saved RIP 可控。"
+            )
+            boundary = "程序在 canary 校验阶段终止，尚未越过栈保护进入返回地址控制。"
         elif stage_id == "stack-overwrite":
             stage_label = "已验证栈帧覆盖，尚未证明 RIP 可控"
             verdict = (
-                f"{issue_target.name} 的动态调试已经看到循环模式进入栈帧，"
-                "说明输入越界可真实落到栈覆盖，但当前还不能声明控制流已被劫持。"
+                f"{issue_target.name} 的动态调试已经看到循环模式进入栈帧或 saved frame 区域，"
+                "说明输入越界可真实落到控制数据附近，但当前还不能声明 RIP 已被劫持。"
             )
             boundary = "尚未在 RIP 上定位到循环模式，因此还不能把结论推进到 RCE。"
         elif stage_id == "crash-only":
@@ -1534,6 +1701,7 @@ idc.qexit(0)
             "dynamic_evidence": [
                 line
                 for line in (
+                    self._compact_text(gdb_validation.get("probe_buffer_line")),
                     self._compact_text(gdb_validation.get("signal_line")),
                     self._compact_text(gdb_validation.get("rip_line")),
                     self._compact_text(native_probe.get("signal")),
@@ -1552,6 +1720,7 @@ idc.qexit(0)
         native_probe: dict[str, Any],
     ) -> dict[str, str]:
         control_offset = gdb_validation.get("control_offset")
+        stage_id = gdb_validation.get("stage_id", "not-validated")
         expected_signal = str(native_probe.get("signal") or gdb_validation.get("signal_line") or "").strip()
         script = "\n".join(
             [
@@ -1571,11 +1740,16 @@ idc.qexit(0)
                 "    if output:",
                 "        print(output.decode('latin-1', errors='replace'))",
                 "    assert io.poll() is not None, 'process should exit or crash after overflow probe'",
-                f"    log.info('expected_stage={gdb_validation.get('stage_id', 'not-validated')}')",
+                f"    log.info('expected_stage={stage_id}')",
                 (
                     f"    log.info('control_offset={control_offset}')"
                     if control_offset is not None
                     else "    log.info('control_offset=unconfirmed')"
+                ),
+                (
+                    "    log.info('canary_boundary=reached')"
+                    if stage_id == "canary-overwrite"
+                    else "    log.info('canary_boundary=unconfirmed')"
                 ),
                 "    log.info('rce=false; getshell=false')",
                 "",
@@ -1808,20 +1982,33 @@ idc.qexit(0)
             temp_dir_path = Path(temp_dir)
             output_dir = temp_dir_path / "ida_export"
             log_path = temp_dir_path / "ida.log"
-            argv = [
-                sys.executable,
-                str(exporter_script),
-                "--elf",
-                str(target),
-                "--out-dir",
-                str(output_dir),
-                "--ida-dir",
-                ida_dir,
-                "--skip-memory",
-                "--no-decompile-funcs",
-                "--log-path",
-                str(log_path),
-            ]
+            script_name = exporter_script.name
+            if script_name == "rootfs_elf_single.py":
+                argv = [
+                    sys.executable,
+                    str(exporter_script),
+                    "--elf",
+                    str(target),
+                    "--out-dir",
+                    str(output_dir),
+                    "--ida-dir",
+                    ida_dir,
+                ]
+            else:
+                argv = [
+                    sys.executable,
+                    str(exporter_script),
+                    "--elf",
+                    str(target),
+                    "--out-dir",
+                    str(output_dir),
+                    "--ida-dir",
+                    ida_dir,
+                    "--skip-memory",
+                    "--no-decompile-funcs",
+                    "--log-path",
+                    str(log_path),
+                ]
             env = os.environ.copy()
             env["IDADIR"] = ida_dir
             completed = subprocess.run(
@@ -1841,6 +2028,8 @@ idc.qexit(0)
             if log_path.exists():
                 stderr_parts.append(log_path.read_text(encoding="utf-8", errors="replace"))
             stderr = "\n".join(part for part in stderr_parts if part).strip()
+            metadata["exporter_script"] = str(exporter_script)
+            metadata["ida_reference"] = self.pwn_skill.ida_reference_excerpt(limit=240)
             return CommandEvidence(
                 command_id="ida_batch",
                 command=argv,
@@ -1971,6 +2160,130 @@ idc.qexit(0)
             if resolved is not None:
                 return resolved
         return None
+
+    async def _check_capability_health(self, capability: ToolCapability) -> ToolHealthCheckResult:
+        if not capability.available:
+            return ToolHealthCheckResult(
+                tool_id=capability.tool_id,
+                available=False,
+                enabled=capability.enabled,
+                status="unavailable",
+                summary=capability.summary,
+                details=capability.summary,
+                executable=capability.executable,
+            )
+        if not capability.enabled:
+            return ToolHealthCheckResult(
+                tool_id=capability.tool_id,
+                available=True,
+                enabled=False,
+                status="disabled",
+                summary=capability.summary,
+                details="Tool is installed but currently disabled in system settings.",
+                executable=capability.executable,
+            )
+
+        if capability.mode == "python":
+            return ToolHealthCheckResult(
+                tool_id=capability.tool_id,
+                available=True,
+                enabled=True,
+                status="ok",
+                summary=capability.summary,
+                details=f"Python module `{capability.family}` import is available.",
+                executable=capability.executable,
+            )
+
+        if capability.mode == "ida":
+            exporter = capability.metadata.get("exporter") or "builtin"
+            exporter_script = capability.metadata.get("exporter_script")
+            detail = f"IDA executable is available; exporter={exporter}"
+            if exporter_script:
+                detail += f"; script={exporter_script}"
+            return ToolHealthCheckResult(
+                tool_id=capability.tool_id,
+                available=True,
+                enabled=True,
+                status="ok",
+                summary=capability.summary,
+                details=detail,
+                executable=capability.executable,
+            )
+
+        executable = capability.executable
+        if not executable:
+            return ToolHealthCheckResult(
+                tool_id=capability.tool_id,
+                available=False,
+                enabled=capability.enabled,
+                status="unavailable",
+                summary=capability.summary,
+                details="Executable path could not be resolved.",
+                executable=None,
+            )
+
+        probe_commands = self._tool_probe_commands(capability.tool_id, executable)
+        env = self._build_command_env(executable)
+        for command in probe_commands:
+            try:
+                completed = await asyncio.to_thread(
+                    subprocess.run,
+                    command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=min(8, self.settings.tool_timeout_seconds),
+                    env=env,
+                )
+            except Exception as exc:
+                return ToolHealthCheckResult(
+                    tool_id=capability.tool_id,
+                    available=True,
+                    enabled=True,
+                    status="error",
+                    summary=capability.summary,
+                    details=str(exc),
+                    executable=executable,
+                )
+            if completed.returncode == 0:
+                detail = (completed.stdout or completed.stderr or "Tool invocation succeeded.").strip()
+                return ToolHealthCheckResult(
+                    tool_id=capability.tool_id,
+                    available=True,
+                    enabled=True,
+                    status="ok",
+                    summary=capability.summary,
+                    details=detail[:400],
+                    executable=executable,
+                )
+        detail = (completed.stderr or completed.stdout or "Probe command failed.").strip()
+        return ToolHealthCheckResult(
+            tool_id=capability.tool_id,
+            available=True,
+            enabled=True,
+            status="error",
+            summary=capability.summary,
+            details=detail[:400],
+            executable=executable,
+        )
+
+    def _tool_probe_commands(self, tool_id: str, executable: str) -> list[list[str]]:
+        shared_version = [[executable, "--version"], [executable, "-v"], [executable, "-V"]]
+        if tool_id == "checksec":
+            return [[executable, "--version"], [executable, "--help"], *shared_version]
+        if tool_id in {"file", "strings", "sha256"}:
+            return [[executable, "--version"], *shared_version]
+        if tool_id in {"elf_header", "section_headers", "symbol_table", "program_headers", "dynamic_section"}:
+            return [[executable, "--version"], [executable, "--help"], *shared_version]
+        if tool_id in {"rizin_overview", "function_xrefs"}:
+            return [[executable, "-v"], [executable, "--version"], *shared_version]
+        if tool_id in {"gdb_batch", "gdb_poc"}:
+            return [[executable, "--version"], *shared_version]
+        if tool_id == "afl_showmap_probe":
+            return [[executable, "-V"], [executable, "--help"], *shared_version]
+        if tool_id == "function_disasm":
+            return [[executable, "--version"], [executable, "--help"], *shared_version]
+        return shared_version
 
     def _resolve_named_executable(self, candidate: str) -> str | None:
         for directory in self._local_tool_bin_dirs():
@@ -2686,8 +2999,18 @@ idc.qexit(0)
         return None
 
     def _resolve_rootfs_elf_exporter_script(self) -> Path | None:
+        skill_wrapper = self.pwn_skill.rootfs_elf_single_script_path()
+        if skill_wrapper is not None:
+            return skill_wrapper
         if self.settings.rootfs_elf_tool_dir is None:
             return None
+        wrapper_candidates = (
+            self.settings.rootfs_elf_tool_dir / "rootfs_elf_single.py",
+            self.settings.rootfs_elf_tool_dir / "scripts" / "rootfs_elf_single.py",
+        )
+        for candidate in wrapper_candidates:
+            if candidate.exists():
+                return candidate
         worker_script = self.settings.rootfs_elf_tool_dir / "ida_worker.py"
         if worker_script.exists():
             return worker_script

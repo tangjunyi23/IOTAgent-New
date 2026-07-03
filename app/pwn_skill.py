@@ -68,6 +68,7 @@ class PwnSkillPack:
                 content=(
                     "已启用 ctf-pwn skill：优先使用运行时证据、反汇编、ELF 元数据和已导出的 IDA/angr 结果；"
                     "不要把伪代码、经验或外部资料伪装成已验证事实。"
+                    "目标是尽最大可能推进到 leak / 栈覆盖 / RIP 可控 / RCE / getshell / flag，而不是停在 crash-only。"
                 ),
             )
         ]
@@ -80,6 +81,7 @@ class PwnSkillPack:
                         content=(
                             "GDB 必须由 agent 全程脚本化驱动：优先使用同 session 的 gdb -batch / gdb -ex 流程，"
                             "不要依赖人工 attach、pause 或外部终端。"
+                            "调试时优先追求可复现的偏移、泄露、寄存器控制或利用脚本证据，不要满足于单次崩溃。"
                         ),
                     ),
                     PwnSkillNote(
@@ -87,9 +89,32 @@ class PwnSkillPack:
                         content=(
                             "若已拿到足够证据，应输出已验证 POC：给出最小触发载荷、运行命令或最小 pwntools 脚本，"
                             "并说明它是如何被运行时证据证实的。"
+                            "如果 canary / PIE / libc 阻碍了最终利用，也要明确当前精确停在 leak、栈覆盖还是 RIP 可控阶段。"
                         ),
                     ),
                 ]
+            )
+
+        if role in {"static-analysis", "exploit-strategy"}:
+            notes.append(
+                PwnSkillNote(
+                    source="skill:ctf-pwn:ida",
+                    content=(
+                        "IDA 优先走 rootfs_elf wrappers：单 ELF 优先 rootfs_elf_single.py 或等价 headless 导出流程，"
+                        "不要把内置简化反编译当成唯一来源；要结合反汇编、imports、strings 与函数索引恢复调用关系。"
+                    ),
+                )
+            )
+
+        methodology_hint = self.methodology_excerpt(limit=420)
+        if methodology_hint:
+            notes.append(
+                PwnSkillNote(
+                    source="skill:ctf-pwn:methodology",
+                    content=(
+                        "历史利用方法学提示：" + methodology_hint
+                    ),
+                )
             )
 
         if role in {"dynamic-analysis", "exploit-strategy"}:
@@ -109,6 +134,26 @@ class PwnSkillPack:
         path = self.skill_root / "assets" / "pwntools_gdbserver_skeleton.py"
         return path if self.available and path.exists() else None
 
+    def rootfs_elf_single_script_path(self) -> Path | None:
+        candidates = (
+            self.skill_root / "scripts" / "rootfs_elf_single.py",
+            self.skill_root / "scripts" / "rootfs_elf" / "rootfs_elf_single.py",
+        )
+        for candidate in candidates:
+            if self.available and candidate.exists():
+                return candidate
+        return None
+
+    def rootfs_elf_batch_script_path(self) -> Path | None:
+        candidates = (
+            self.skill_root / "scripts" / "rootfs_elf_batch.py",
+            self.skill_root / "scripts" / "rootfs_elf" / "rootfs_elf_batch.py",
+        )
+        for candidate in candidates:
+            if self.available and candidate.exists():
+                return candidate
+        return None
+
     def gdb_reference_excerpt(self, *, limit: int = 480) -> str:
         if not self.available:
             return ""
@@ -122,4 +167,43 @@ class PwnSkillPack:
             if line.strip() and not line.startswith(("#", "```"))
         ]
         compact = re.sub(r"\s+", " ", " ".join(lines))
+        return compact[:limit].rstrip() + ("…" if len(compact) > limit else "")
+
+    def ida_reference_excerpt(self, *, limit: int = 480) -> str:
+        if not self.available:
+            return ""
+        path = self.skill_root / "references" / "headless_ida_export.md"
+        if not path.exists():
+            return ""
+        text = path.read_text(encoding="utf-8")
+        lines = [
+            line.strip()
+            for line in text.splitlines()
+            if line.strip() and not line.startswith(("#", "```"))
+        ]
+        compact = re.sub(r"\s+", " ", " ".join(lines))
+        return compact[:limit].rstrip() + ("…" if len(compact) > limit else "")
+
+    def methodology_excerpt(self, *, limit: int = 520) -> str:
+        if not self.available:
+            return ""
+        path = self.skill_root / "methodologies" / "index.md"
+        if not path.exists():
+            return ""
+        lines = [
+            line.strip()
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip().startswith("|")
+        ]
+        if len(lines) <= 2:
+            return ""
+        entries = []
+        for line in lines[2:8]:
+            parts = [item.strip() for item in line.strip("|").split("|")]
+            if len(parts) < 7:
+                continue
+            entries.append(
+                f"{parts[0]}: mitigations={parts[2]}; vuln={parts[3]}; primitives={parts[4]}; insight={parts[5]}"
+            )
+        compact = re.sub(r"\s+", " ", " | ".join(entries))
         return compact[:limit].rstrip() + ("…" if len(compact) > limit else "")

@@ -48,6 +48,7 @@ Promote a lesson into this file only if it changes how you would approach a futu
   - the decisive trick is converting a tiny socket `read` into a full ret2libc by rewriting that active call's return address and pacing each chunk to avoid TCP short-read desynchronization
   - a leak or fake-frame stage temporarily abuses the executable's copy-relocated `stdin` or `stdout` globals; once a later `read` lands there, treat stdio as poisoned and finish with raw `read@plt`, `execve`, or `orw` instead of planning around later `puts` or `printf`
   - the decisive trick is restoring the caller's frame pointer and re-entering a mid-function caller block that already loads arguments from caller locals; overwriting those caller locals can turn an existing response helper into a leak primitive without needing a full `write(fd, addr, len)` gadget chain
+  - if the binary already imports `puts`, try `puts(got_entry)` before `ret2dlresolve`; on i386 especially, one unterminated GOT slot can bleed through adjacent `.got.plt` entries and turn a single ROP call into a multi-symbol libc fingerprint
 
 ## `fmt` -> leak-first or arbitrary-write
 

@@ -41,7 +41,9 @@ def test_ida_capability_prefers_rootfs_elf_exporter(tmp_path: Path):
 
     assert capability.available is True
     assert capability.metadata["exporter"] == "rootfs_elf"
-    assert capability.metadata["exporter_script"] == str(settings.rootfs_elf_tool_dir / "ida_worker.py")
+    exporter_script = capability.metadata["exporter_script"]
+    assert exporter_script.endswith(("rootfs_elf_single.py", "ida_worker.py"))
+    assert Path(exporter_script).exists()
 
 
 def test_rizin_capability_prefers_vendored_radare2(tmp_path: Path):
